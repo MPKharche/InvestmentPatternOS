@@ -1,0 +1,87 @@
+GenAI-Powered Pattern Recognition & Signal System
+Core Architecture Concept
+You're essentially building a self-improving pattern recognition agent with a human-in-the-loop feedback loop. Here's how to think about it:
+
+System Components
+1. Data Layer
+
+TradingView via Pine Script webhooks → free, sends OHLCV + indicator data on trigger
+Alternatively: Yahoo Finance / NSE API / Alpha Vantage free tiers for OHLCV pulls
+Store in PostgreSQL (you already have one) — tick/daily candles, signals, feedback
+
+2. Pattern Rule Engine (LLM-Assisted)
+
+You describe a pattern conversationally to the LLM (e.g., "flag pole with tight consolidation, volume dry-up, breakout on 1.5x avg volume")
+LLM converts it into structured JSON rules — thresholds, conditions, sequence logic
+These rules go into a pattern_rulebook table — versioned, editable, auditable
+Each pattern = its own workflow node
+
+3. Confidence Scoring Layer
+
+Rule-based pass gives a base score
+LLM re-evaluates the chart context (recent price action, sector, broader market) and adjusts confidence
+Only signals above threshold (say 75%) reach you
+This is where your feedback loop makes it smarter — low-confidence patterns that you manually marked as valid get weight-adjusted
+
+4. Feedback & Learning Loop
+
+Every signal you review: you mark executed / skipped / watching
+For executed: you later mark hit target / stopped out / partial
+LLM periodically runs a pattern audit — compares rule triggers vs outcomes, surfaces what's working
+Your notes and observations get embedded and stored as learning_context tied to each pattern type
+Rulebook gets a new version whenever you approve refinements
+
+5. Visualization
+
+Lightweight web app (React + lightweight charting lib like Lightweight Charts by TradingView — free, open source)
+Renders OHLCV candles with signal markers, your annotations, outcome tracking
+Essentially your own signal journal screen
+
+6. Alerting
+
+Telegram Bot (free, trivial to set up) — sends signal card with symbol, pattern name, confidence score, key levels
+Or a simple Signal Review Page (web app, mobile-friendly) showing only pending high-confidence signals waiting for your action
+
+
+Data & Learning Schema (PostgreSQL)
+patterns          → pattern_id, name, description, rulebook_json, version, created_at
+signals           → signal_id, pattern_id, symbol, exchange, timeframe, triggered_at, confidence_score, rule_snapshot
+signal_context    → signal_id, chart_summary, llm_analysis, key_levels
+reviews           → signal_id, action (executed/skipped), entry_price, sl, target, timestamp
+outcomes          → signal_id, result (hit/stopped/open), exit_price, pnl_pct, notes, feedback_text
+learning_log      → pattern_id, source (outcome/manual), insight_text, embedding, applied_to_version
+
+Iterative Pattern Onboarding Workflow
+You describe pattern (chat)
+        ↓
+LLM drafts rule JSON + asks clarifying questions
+        ↓
+You refine → LLM locks rulebook entry (v1)
+        ↓
+Scanner runs on universe → raw signals generated
+        ↓
+LLM confidence filter → only high confidence pushed
+        ↓
+You review → mark action
+        ↓
+Outcome tracked → LLM audit → rulebook v2 suggestion → you approve
+
+Low-Cost VPS Stack
+ComponentToolCostData fetchyfinance + NSE unofficial APIFreeLLMOllama + qwen2.5:3b (you already run this)FreeDBPostgreSQL (existing)FreeSchedulercron or APSchedulerFreeChartsTradingView Lightweight ChartsFreeBackendFastAPI (Python)FreeFrontendReact or plain HTMLFreeAlertsTelegram Bot APIFreeHostingYour existing VPSExisting
+For LLM calls needing stronger reasoning (pattern rule drafting, audit analysis) — use Claude API selectively, only on-demand not in scan loop. Scan loop uses local Ollama.
+
+What Makes This Different from Just Pine Script Alerts
+
+Pine Script fires on mechanical rule match — no context awareness
+Your system adds: LLM context layer (is this breakout in a downtrending sector? is volume confirmation weak?), memory of what worked, and your feedback compounding into the rulebook
+Over time it stops being a rule scanner and starts behaving like a pattern-aware analyst that knows your style
+
+
+Suggested Build Sequence
+
+Week 1 — Schema setup + one pattern onboarded manually + Telegram alert firing
+Week 2 — Scanner loop + confidence scoring + signal review page
+Week 3 — Outcome tracking + LLM audit on first batch of signals
+Week 4 — Rulebook versioning + learning log + second pattern onboarded
+
+Want me to start with the schema DDL, the pattern rule JSON format design, or the scanner + confidence scoring module?
