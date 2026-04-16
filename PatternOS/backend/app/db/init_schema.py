@@ -9,7 +9,9 @@ from app.db.session import engine, Base
 from app.db.models import (
     Universe, Pattern, PatternVersion, Signal, SignalContext,
     Review, Outcome, LearningLog, PatternChat, PatternEvent,
-    BacktestRun, PatternStudy, ScreeningCache
+    BacktestRun, PatternStudy, ScreeningCache,
+    PatternCandidate, SignalAlertJournal, TelegramFeedback,
+    PatternReviewCycle, TelegramSyncState
 )
 
 

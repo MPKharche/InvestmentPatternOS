@@ -43,6 +43,19 @@ def start_scheduler():
         finally:
             db.close()
 
+    @scheduler.scheduled_job(CronTrigger(minute="*/2", timezone="Asia/Kolkata"))
+    async def sync_telegram_feedback_job():
+        """Runs every 2 minutes — import Telegram button feedback into PatternOS."""
+        from app.db.session import SessionLocal
+        from app.alerts.feedback_sync import sync_feedback_from_telegram
+        db = SessionLocal()
+        try:
+            processed = await sync_feedback_from_telegram(db)
+            if processed:
+                logger.info(f"Telegram feedback sync: processed {processed} callback updates")
+        finally:
+            db.close()
+
     scheduler.start()
     logger.info("Scheduler started.")
 

@@ -1,0 +1,31 @@
+{
+  "finalized": true,
+  "pattern_type": "rsi_divergence",
+  "description": "Bearish RSI divergence on Nifty 50: price higher high vs RSI lower high after a rally.",
+  "direction": "bearish",
+  "timeframes": ["1d"],
+  "criteria": ["rsi_divergence_bearish"],
+  "conditions": {
+    "divergence_types": { "bearish": { "rsi": "14" } },
+    "trend": { "prior_trend": "bullish", "lookback_bars": 55, "min_move_pct": 4 }
+  },
+  "divergence": {
+    "lookback_bars": 65,
+    "swing_order": 5,
+    "min_swing_separation": 9
+  },
+  "backtest": {
+    "outcome_horizon_days": 21,
+    "bearish_success_if_ret_below_pct": -2.0,
+    "bearish_failure_if_ret_above_pct": 2.5,
+    "min_bars_between_events": 15
+  },
+  "confidence_weights": {
+    "trend_alignment": 22,
+    "momentum": 28,
+    "pattern_tightness": 18,
+    "volume_confirmation": 16,
+    "breakout_quality": 16
+  },
+  "notes": "RSI swing divergence; scanner uses same criteria-only path as MACD pack."
+}

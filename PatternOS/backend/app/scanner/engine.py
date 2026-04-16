@@ -3,16 +3,22 @@ Scanner engine — orchestrates data fetch → rule eval → LLM screen → sign
 """
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from app.db.models import Pattern, PatternVersion, Universe, Signal, SignalContext
+from app.research.signal_enrichment import build_equity_research_note
 from app.scanner.data import fetch_ohlcv, build_chart_summary
 from app.scanner.evaluator import evaluate_pattern
 from app.llm.screener import llm_screen
 from app.cache.signal_cache import get_cached_screening, store_screening_result
 from app.config import get_settings
+from app.alerts.telegram import build_alert_payload, send_telegram_alert
+from app.scanner.backtest_metrics import forward_returns_for_live_bar
 
 settings = get_settings()
+
+# No new signal for same pattern+symbol+timeframe within this many calendar days (~3 weeks)
+SIGNAL_COOLDOWN_DAYS = 21
 
 
 async def scan_symbol(
@@ -22,6 +28,10 @@ async def scan_symbol(
     rulebook: dict,
     timeframe: str,
     db: Session,
+    *,
+    company_name: str | None = None,
+    sector: str | None = None,
+    index_name: str | None = None,
 ) -> Signal | None:
     """
     Scan a single symbol against a single pattern.
@@ -29,6 +39,20 @@ async def scan_symbol(
     """
     df = await asyncio.to_thread(fetch_ohlcv, symbol, timeframe)
     if df is None:
+        return None
+
+    cutoff = datetime.utcnow() - timedelta(days=SIGNAL_COOLDOWN_DAYS)
+    recent = (
+        db.query(Signal)
+        .filter(
+            Signal.pattern_id == pattern.id,
+            Signal.symbol == symbol,
+            Signal.timeframe == timeframe,
+            Signal.triggered_at >= cutoff,
+        )
+        .first()
+    )
+    if recent:
         return None
 
     base_score, breakdown = evaluate_pattern(df, rulebook)
@@ -76,6 +100,18 @@ async def scan_symbol(
     if adjusted_score < settings.SIGNAL_CONFIDENCE_THRESHOLD:
         return None
 
+    equity_note = await build_equity_research_note(
+        settings,
+        pattern_name=pattern.name,
+        symbol=symbol,
+        company_name=company_name,
+        sector=sector,
+        index_name=index_name,
+        confidence=adjusted_score,
+        screener_analysis=analysis,
+        chart_summary=chart_summary,
+    )
+
     # Build key levels from last bar
     last = df.iloc[-1]
     pattern_low = df["Low"].tail(20).min()
@@ -101,13 +137,22 @@ async def scan_symbol(
     db.add(signal)
     db.flush()  # get signal.id
 
+    i_last = len(df) - 1
+    forward_meta = forward_returns_for_live_bar(df, i_last)
+
     ctx = SignalContext(
         signal_id=signal.id,
         chart_summary=chart_summary,
         llm_analysis=analysis,
         key_levels=key_levels,
+        forward_horizon_returns=forward_meta,
+        equity_research_note=equity_note,
     )
     db.add(ctx)
+
+    # Persist alert journal and push Telegram alert payload.
+    payload = build_alert_payload(db, signal, pattern, key_levels, analysis, equity_research=equity_note)
+    await send_telegram_alert(db, signal, pattern, payload)
     return signal
 
 
@@ -145,8 +190,7 @@ async def run_scan(
         # Custom symbols override scope
         universe = [u for u in universe if u.symbol in symbols]
     elif scope == "nifty50":
-        # Filter to Nifty 50 index
-        universe = [u for u in universe if u.index_name and "nifty" in u.index_name.lower()]
+        universe = [u for u in universe if (u.index_name or "").strip() == "Nifty 50"]
     # else scope == "full": use all universe symbols
 
     signals_created = 0
@@ -168,7 +212,19 @@ async def run_scan(
         tasks = []
         for u in universe:
             for tf in timeframes:
-                tasks.append(scan_symbol(u.symbol, u.exchange, pattern, rulebook, tf, db))
+                tasks.append(
+                    scan_symbol(
+                        u.symbol,
+                        u.exchange,
+                        pattern,
+                        rulebook,
+                        tf,
+                        db,
+                        company_name=u.name,
+                        sector=u.sector,
+                        index_name=u.index_name,
+                    )
+                )
 
         # Run in batches of 10
         batch_size = 10

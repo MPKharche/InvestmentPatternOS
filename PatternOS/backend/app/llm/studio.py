@@ -1,13 +1,12 @@
 """
 Pattern Studio LLM logic — split routing with vision support.
 
-  chat()    → Gemini 2.5 Flash
+  chat()    → Grok 4.1 Fast (primary) / DeepSeek V3.2 (fallback)
     All conversational turns: greeting, clarifying questions, file/chart analysis.
     Supports multimodal content (images, extracted PDF text, Word docs).
 
-  reason()  → Claude Haiku 4.5
+  reason()  → Grok 4.1 Fast (primary) / DeepSeek V3.2 (fallback)
     Only fires when ready to extract a structured JSON rulebook.
-    Single focused call — keeps Claude usage minimal and precise.
 """
 import json
 import re
@@ -25,16 +24,16 @@ When a user uploads a chart image or document:
 - State your findings clearly and confidently — what you see, what it implies, what is unclear
 - Raise any concerns or ambiguities (false signals, unclear pivots, conflicting signals)
 - Form a hypothesis about the pattern and discuss it with the user
-- Ask focused follow-up questions to resolve ambiguities (max 2 at a time)
 
-For text descriptions: ask clarifying questions about:
-- Prior trend requirements
-- Consolidation characteristics
-- Volume behavior
-- Breakout/entry trigger
+Momentum / divergence setups (e.g. MACD vs price, RSI vs price):
+- Default MACD is 12,26,9 unless the user specifies otherwise.
+- You do NOT need exact calendar dates for pivots — the scanner finds swing highs/lows in price and compares MACD at those bars.
+- Ask at most ONE clarifying question if direction (bearish vs bullish divergence) is ambiguous; otherwise finalize.
+- Do not loop on "confirm exact dates/prices" — that blocks the user; the system is approximate by design.
+
+For classical breakout / consolidation patterns, you may still ask about prior trend, range, volume, and triggers (max 2 questions at a time).
 
 Keep responses direct and practical. No emojis. No markdown headers.
-Ask focused questions (max 2 at a time) — don't overwhelm.
 
 When you have gathered enough information to define the pattern precisely, end your reply with exactly:
 [READY_TO_FINALIZE]
@@ -47,7 +46,45 @@ EXTRACT_SYSTEM = """You are a technical pattern rule extractor.
 Given a conversation about a chart pattern (including any chart analysis from uploaded images),
 output ONLY a well-constructed JSON rulebook. No explanation. No preamble. Just the JSON.
 
-Required structure — fill ALL fields with specific values derived from the conversation:
+---
+
+If the pattern is MACD (or RSI) **divergence** — price swings vs indicator swings — use THIS shape (this is what the scanner and backtest execute):
+
+```json
+{
+  "finalized": true,
+  "pattern_type": "macd_divergence",
+  "description": "one line: e.g. bearish MACD divergence — price higher high, MACD lower high",
+  "direction": "bearish",
+  "timeframes": ["1d"],
+  "criteria": ["macd_divergence_bearish"],
+  "conditions": {
+    "divergence_types": { "bearish": { "macd": "12,26,9" } },
+    "trend": { "prior_trend": "bullish", "lookback_bars": 60, "min_move_pct": 8 },
+    "histogram_crossover": { "required": false }
+  },
+  "divergence": {
+    "lookback_bars": 65,
+    "swing_order": 5,
+    "min_swing_separation": 8
+  },
+  "confidence_weights": {
+    "trend_alignment": 20,
+    "momentum": 30,
+    "pattern_tightness": 10,
+    "volume_confirmation": 10,
+    "breakout_quality": 10
+  },
+  "notes": "Scanner uses aligned swing highs/lows on price vs MACD at those bars; default MACD 12,26,9."
+}
+```
+
+For **bullish** MACD divergence set direction to "bullish", criteria to ["macd_divergence_bullish"], and divergence_types.bullish.
+
+---
+
+For **non-divergence** patterns (flags, ranges, breakouts), use this structure instead:
+
 ```json
 {
   "finalized": true,
@@ -78,10 +115,10 @@ Required structure — fill ALL fields with specific values derived from the con
     "indicators": {}
   },
   "confidence_weights": {
-    "trend_strength": 25,
-    "volume_confirmation": 30,
+    "trend_alignment": 25,
+    "volume_confirmation": 25,
     "pattern_tightness": 25,
-    "breakout_quality": 20
+    "breakout_quality": 25
   },
   "key_levels": {
     "entry": "breakout_close",
@@ -92,7 +129,7 @@ Required structure — fill ALL fields with specific values derived from the con
 }
 ```
 
-If custom indicators (MACD, RSI, etc.) were discussed, populate conditions.indicators with their specific rules."""
+Use `trend_alignment` (not trend_strength) in confidence_weights. Pick ONE primary template — divergence OR breakout — matching the conversation."""
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -118,6 +155,43 @@ def _extract_json(text: str) -> dict | None:
         return None
 
 
+def _normalize_rulebook(rb: dict) -> dict:
+    """Ensure divergence patterns have executable criteria + params for scanner/backtest."""
+    pt = str(rb.get("pattern_type", "")).lower()
+    cond = rb.setdefault("conditions", {})
+    div_types = cond.get("divergence_types") or {}
+
+    if "macd_divergence" in pt or div_types:
+        rb.setdefault(
+            "divergence",
+            {"lookback_bars": 65, "swing_order": 5, "min_swing_separation": 8},
+        )
+        direction = str(rb.get("direction", "bearish")).lower()
+        if "bullish" in direction or "bullish" in div_types:
+            rb["direction"] = "bullish"
+            rb.setdefault("criteria", ["macd_divergence_bullish"])
+        else:
+            rb["direction"] = "bearish"
+            rb.setdefault("criteria", ["macd_divergence_bearish"])
+
+    if "rsi_divergence" in pt:
+        rb.setdefault(
+            "divergence",
+            {"lookback_bars": 65, "swing_order": 5, "min_swing_separation": 8},
+        )
+        direction = str(rb.get("direction", "bearish")).lower()
+        if "bullish" in direction:
+            rb.setdefault("criteria", ["rsi_divergence_bullish"])
+        else:
+            rb.setdefault("criteria", ["rsi_divergence_bearish"])
+
+    cw = rb.get("confidence_weights")
+    if isinstance(cw, dict) and "trend_strength" in cw and "trend_alignment" not in cw:
+        cw["trend_alignment"] = cw.pop("trend_strength")
+
+    return rb
+
+
 def _build_user_content(
     text: str,
     file_blocks: list[dict[str, Any]] | None,
@@ -138,7 +212,7 @@ def _build_user_content(
 
 
 def _history_to_text(history: list[dict], user_message: str) -> str:
-    """Flatten history to text for the Claude extraction prompt."""
+    """Flatten history to text for the rulebook JSON extraction prompt."""
     lines = []
     for m in history:
         role = m["role"].upper()
@@ -165,8 +239,8 @@ async def run_studio_chat(
 
     Flow:
     1. Build user content (text + optional file vision blocks).
-    2. Gemini drives the conversation turn (vision-capable).
-    3. If Gemini signals [READY_TO_FINALIZE], Claude Haiku extracts the rulebook JSON.
+    2. Grok drives the conversation turn (vision-capable when attachments present).
+    3. If Grok signals [READY_TO_FINALIZE], reason() extracts the rulebook JSON.
     """
     user_content = _build_user_content(user_message, file_blocks)
 
@@ -174,18 +248,18 @@ async def run_studio_chat(
     messages.extend(history)
     messages.append({"role": "user", "content": user_content})
 
-    # Step 1 — Gemini conversational + vision turn
+    # Step 1 — Grok conversational + vision turn
     raw_reply = await chat(messages, temperature=0.6, max_tokens=1200)
 
     ready = _is_ready_to_finalize(raw_reply)
     clean_reply = _clean_reply(raw_reply)
     rulebook = None
 
-    # Step 2 — Claude Haiku extracts JSON only when Gemini signals ready
+    # Step 2 — reason() extracts JSON only when ready signal present
     if ready:
         history_text = _history_to_text(history, user_message)
         if file_blocks:
-            # Tell Claude there was a chart/document uploaded
+            # Tell reason() there was a chart/document uploaded
             file_note = f"[Note: User uploaded {len(file_blocks)} file attachment(s) — chart or document — which was analyzed visually in the conversation.]\n\n"
             history_text = file_note + history_text
 
@@ -203,6 +277,7 @@ async def run_studio_chat(
         rulebook = _extract_json(raw_json)
 
         if rulebook:
+            rulebook = _normalize_rulebook(rulebook)
             rulebook["finalized"] = True
             clean_reply += "\n\nRulebook finalized and saved. Review it on the right, then run a scan."
         else:

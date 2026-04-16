@@ -208,7 +208,7 @@ export function SignalDetailModal({ signal, onClose, onOpenChart }: SignalDetail
                     <td>{riskRewardL2}</td>
                   </tr>
                   <tr className={styles.stopRow}>
-                    <td colspan="4" style={{ paddingTop: "8px", borderTop: "1px solid #333" }}>
+                    <td colSpan={4} style={{ paddingTop: "8px", borderTop: "1px solid #333" }}>
                       <div className={styles.riskRow}>
                         <span>Loss Risk L1</span>
                         <span className={styles.negative}>-{l1RiskPct}%</span>

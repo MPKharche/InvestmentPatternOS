@@ -1,0 +1,31 @@
+{
+  "finalized": true,
+  "pattern_type": "macd_divergence",
+  "description": "Bullish MACD divergence on Nifty 50: price lower low vs MACD higher low after a decline; potential exhaustion sell-off.",
+  "direction": "bullish",
+  "timeframes": ["1d"],
+  "criteria": ["macd_divergence_bullish"],
+  "conditions": {
+    "divergence_types": { "bullish": { "macd": "12,26,9" } },
+    "trend": { "prior_trend": "bearish", "lookback_bars": 60, "min_move_pct": 5 }
+  },
+  "divergence": {
+    "lookback_bars": 70,
+    "swing_order": 5,
+    "min_swing_separation": 10
+  },
+  "backtest": {
+    "outcome_horizon_days": 21,
+    "bullish_success_if_ret_above_pct": 2.0,
+    "bullish_failure_if_ret_below_pct": -2.5,
+    "min_bars_between_events": 15
+  },
+  "confidence_weights": {
+    "trend_alignment": 20,
+    "momentum": 30,
+    "pattern_tightness": 15,
+    "volume_confirmation": 20,
+    "breakout_quality": 15
+  },
+  "notes": "Live scan: same cooldown semantics as bearish MACD pack."
+}

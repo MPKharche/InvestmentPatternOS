@@ -16,7 +16,7 @@ TIMEFRAME_MAP = {
 
 # Extended lookback for indicator warmup (EMA200 needs 200+ bars)
 INDICATOR_LOOKBACK_MAP = {
-    "1d": ("1d", 500),   # ~350 trading days → enough for EMA200
+    "1d": ("1d", 900),   # ~3.5y trading days → EMA200 + 6m forward from historical bars
     "1h": ("1h", 120),
     "1w": ("1wk", 730),
     "1M": ("1mo", 3650),

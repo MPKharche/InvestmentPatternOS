@@ -3,8 +3,13 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Body
 from sqlalchemy.orm import Session
 from app.db.session import get_db
-from app.db.models import Pattern, PatternChat, PatternVersion, PatternEvent, BacktestRun, PatternStudy
-from app.api.schemas import ChatRequest, ChatResponse, ChatMessage
+from app.db.models import Pattern, PatternChat, PatternVersion, PatternEvent, BacktestRun, PatternStudy, PatternCandidate
+from app.api.schemas import (
+    ChatRequest, ChatResponse, ChatMessage,
+    PatternCandidateCreate, PatternCandidateOut, PatternCandidateUpdate,
+    StudyApplyPatchesRequest,
+)
+from app.utils.deep_merge import deep_merge
 from app.llm.studio import run_studio_chat
 from app.utils.file_processor import process_file
 
@@ -12,6 +17,98 @@ router = APIRouter(prefix="/studio", tags=["studio"])
 
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB per upload
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".pdf", ".docx", ".doc", ".txt", ".md"}
+
+
+@router.post("/candidates", response_model=PatternCandidateOut)
+def create_candidate(body: PatternCandidateCreate, db: Session = Depends(get_db)):
+    c = PatternCandidate(
+        title=body.title,
+        objective=body.objective,
+        source_type=body.source_type,
+        screenshot_refs=body.screenshot_refs,
+        traits_json=body.traits_json,
+        draft_rules_json=body.draft_rules_json,
+        conditions_json=body.conditions_json,
+        universes_json=body.universes_json,
+        status="draft",
+    )
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    return c
+
+
+@router.get("/candidates", response_model=list[PatternCandidateOut])
+def list_candidates(status: str | None = Query(None), db: Session = Depends(get_db)):
+    q = db.query(PatternCandidate).order_by(PatternCandidate.updated_at.desc())
+    if status:
+        q = q.filter(PatternCandidate.status == status)
+    return q.limit(300).all()
+
+
+@router.get("/candidates/{candidate_id}", response_model=PatternCandidateOut)
+def get_candidate(candidate_id: str, db: Session = Depends(get_db)):
+    c = db.query(PatternCandidate).filter_by(id=candidate_id).first()
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    return c
+
+
+@router.patch("/candidates/{candidate_id}", response_model=PatternCandidateOut)
+def update_candidate(candidate_id: str, body: PatternCandidateUpdate, db: Session = Depends(get_db)):
+    c = db.query(PatternCandidate).filter_by(id=candidate_id).first()
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    for key, value in body.model_dump(exclude_none=True).items():
+        setattr(c, key, value)
+    db.commit()
+    db.refresh(c)
+    return c
+
+
+def _draft_rules_nonempty(dr) -> bool:
+    """JSONB may be None, {}, or a dict with content."""
+    if dr is None:
+        return False
+    if isinstance(dr, dict) and len(dr) > 0:
+        return True
+    return bool(dr)
+
+
+@router.post("/candidates/{candidate_id}/finalize")
+def finalize_candidate(candidate_id: str, db: Session = Depends(get_db)):
+    c = db.query(PatternCandidate).filter_by(id=candidate_id).first()
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    if c.linked_pattern_id:
+        return {"ok": True, "pattern_id": c.linked_pattern_id, "message": "Candidate already finalized"}
+    if not _draft_rules_nonempty(c.draft_rules_json):
+        raise HTTPException(
+            400,
+            "Candidate has no saved rulebook. In Studio: finish the Define tab so the Rulebook panel has JSON, "
+            "click “Save to candidate”, then Finalize — or Finalize will auto-save if the panel already has a rulebook.",
+        )
+
+    pattern = Pattern(
+        name=c.title[:100],
+        description=c.objective,
+        status="active",
+        timeframes=["1d"],
+    )
+    db.add(pattern)
+    db.flush()
+
+    pv = PatternVersion(
+        pattern_id=pattern.id,
+        version=1,
+        rulebook_json=c.draft_rules_json,
+        change_summary="Finalized from pattern candidate",
+    )
+    db.add(pv)
+    c.linked_pattern_id = pattern.id
+    c.status = "approved_for_production"
+    db.commit()
+    return {"ok": True, "pattern_id": pattern.id}
 
 
 async def _get_or_create_pattern(pattern_id: str | None, db: Session) -> Pattern:
@@ -221,11 +318,14 @@ def list_events(
     pattern_id: str,
     symbol: str = Query(None),
     outcome: str = Query(None),
-    limit: int = Query(50, le=200),
+    backtest_run_id: str = Query(None),
+    limit: int = Query(50, le=500),
     offset: int = Query(0),
     db: Session = Depends(get_db),
 ):
     q = db.query(PatternEvent).filter(PatternEvent.pattern_id == pattern_id)
+    if backtest_run_id:
+        q = q.filter(PatternEvent.backtest_run_id == backtest_run_id)
     if symbol:
         q = q.filter(PatternEvent.symbol == symbol)
     if outcome:
@@ -238,7 +338,9 @@ def list_events(
             {
                 "id": e.id, "symbol": e.symbol, "timeframe": e.timeframe,
                 "detected_at": e.detected_at, "entry_price": e.entry_price,
+                "backtest_run_id": e.backtest_run_id,
                 "ret_5d": e.ret_5d, "ret_10d": e.ret_10d, "ret_20d": e.ret_20d,
+                "ret_21d": e.ret_21d, "ret_63d": e.ret_63d, "ret_126d": e.ret_126d,
                 "max_gain_20d": e.max_gain_20d, "max_loss_20d": e.max_loss_20d,
                 "outcome": e.outcome, "indicator_snapshot": e.indicator_snapshot,
                 "user_feedback": e.user_feedback, "user_notes": e.user_notes,
@@ -257,6 +359,44 @@ def update_event_feedback(event_id: str, body: dict, db: Session = Depends(get_d
     evt.user_notes = body.get("notes")
     db.commit()
     return {"ok": True}
+
+
+@router.post("/{pattern_id}/study/apply-patches")
+def apply_study_patches(pattern_id: str, body: StudyApplyPatchesRequest, db: Session = Depends(get_db)):
+    """
+    Deep-merge each patch dict into the active rulebook and create a new PatternVersion.
+    Use suggestion.apply_patch values from the study JSON (or any partial rulebook fragments).
+    """
+    from datetime import datetime as dt
+
+    p = db.query(Pattern).filter_by(id=pattern_id).first()
+    if not p:
+        raise HTTPException(404, "Pattern not found")
+    pv = (
+        db.query(PatternVersion)
+        .filter_by(pattern_id=pattern_id, version=p.current_version)
+        .first()
+    )
+    if not pv:
+        raise HTTPException(400, "No active rulebook version")
+    rb: dict = dict(pv.rulebook_json or {})
+    for patch in body.patches:
+        if isinstance(patch, dict) and patch:
+            rb = deep_merge(rb, patch)
+    new_ver = p.current_version + 1
+    nxt = PatternVersion(
+        pattern_id=pattern_id,
+        version=new_ver,
+        rulebook_json=rb,
+        change_summary=body.change_summary[:500],
+        approved_at=dt.utcnow(),
+    )
+    p.current_version = new_ver
+    p.updated_at = dt.utcnow()
+    db.add(nxt)
+    db.commit()
+    db.refresh(nxt)
+    return {"ok": True, "version": new_ver, "pattern_version_id": nxt.id}
 
 
 @router.post("/{pattern_id}/study")
@@ -286,7 +426,8 @@ async def generate_study(pattern_id: str, db: Session = Depends(get_db)):
     sample = [
         {
             "symbol": e.symbol, "detected_at": e.detected_at, "outcome": e.outcome,
-            "ret_10d": e.ret_10d, "ret_20d": e.ret_20d,
+            "ret_5d": e.ret_5d, "ret_10d": e.ret_10d, "ret_20d": e.ret_20d,
+            "ret_21d": e.ret_21d, "ret_63d": e.ret_63d, "ret_126d": e.ret_126d,
             "indicators": e.indicator_snapshot,
         }
         for e in events
@@ -298,6 +439,17 @@ async def generate_study(pattern_id: str, db: Session = Depends(get_db)):
         "neutral_count": run.neutral_count, "success_rate": run.success_rate,
         "avg_ret_5d": run.avg_ret_5d, "avg_ret_10d": run.avg_ret_10d, "avg_ret_20d": run.avg_ret_20d,
     }
+    all_run_ev = db.query(PatternEvent).filter_by(backtest_run_id=run.id).all()
+
+    def _mean(xs: list[float]) -> float | None:
+        return round(sum(xs) / len(xs), 4) if xs else None
+
+    r21 = [float(e.ret_21d) for e in all_run_ev if e.ret_21d is not None]
+    r63 = [float(e.ret_63d) for e in all_run_ev if e.ret_63d is not None]
+    r126 = [float(e.ret_126d) for e in all_run_ev if e.ret_126d is not None]
+    run_stats["avg_ret_21d"] = _mean(r21)
+    run_stats["avg_ret_63d"] = _mean(r63)
+    run_stats["avg_ret_126d"] = _mean(r126)
 
     result = await generate_pattern_study(
         pattern_name=p.name,

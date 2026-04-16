@@ -45,6 +45,7 @@ class Pattern(Base):
     signals   = relationship("Signal", back_populates="pattern")
     chat      = relationship("PatternChat", back_populates="pattern", cascade="all, delete-orphan")
     learning  = relationship("LearningLog", back_populates="pattern", cascade="all, delete-orphan")
+    candidates = relationship("PatternCandidate", back_populates="linked_pattern")
 
 
 class PatternVersion(Base):
@@ -87,6 +88,8 @@ class SignalContext(Base):
     chart_summary = Column(Text)
     llm_analysis  = Column(Text)
     key_levels    = Column(JSONB)
+    forward_horizon_returns = Column(JSONB)
+    equity_research_note = Column(JSONB)
     created_at    = Column(DateTime(timezone=True), default=datetime.utcnow)
 
     signal = relationship("Signal", back_populates="context")
@@ -157,6 +160,9 @@ class PatternEvent(Base):
     ret_5d              = Column(Float)
     ret_10d             = Column(Float)
     ret_20d             = Column(Float)
+    ret_21d             = Column(Float)
+    ret_63d             = Column(Float)
+    ret_126d            = Column(Float)
     max_gain_20d        = Column(Float)
     max_loss_20d        = Column(Float)
     outcome             = Column(String(20))
@@ -216,3 +222,74 @@ class ScreeningCache(Base):
     analysis_text    = Column(Text, nullable=False)
     cached_at        = Column(DateTime(timezone=True), default=datetime.utcnow, index=True)
     __table_args__   = (UniqueConstraint("pattern_id", "symbol", "timeframe"), Index("idx_screening_cache_expire", "cached_at"))
+
+
+class PatternCandidate(Base):
+    """Draft-to-production candidate pattern lifecycle."""
+    __tablename__ = "pattern_candidates"
+    id                 = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    title              = Column(String(160), nullable=False)
+    objective          = Column(Text, nullable=False)
+    source_type        = Column(String(20), nullable=False, default="studio")  # studio|upload|system
+    screenshot_refs    = Column(JSONB)  # list of URLs/paths
+    traits_json        = Column(JSONB, nullable=False, default=dict)
+    draft_rules_json   = Column(JSONB, nullable=False, default=dict)
+    conditions_json    = Column(JSONB, nullable=False, default=dict)
+    universes_json     = Column(JSONB, nullable=False, default=list)
+    status             = Column(String(30), nullable=False, default="draft")  # draft|under_validation|revision|approved_for_production|retired
+    validation_summary = Column(JSONB)
+    revision_notes     = Column(Text)
+    linked_pattern_id  = Column(UUID(as_uuid=False), ForeignKey("patterns.id"))
+    created_at         = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at         = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    linked_pattern = relationship("Pattern", back_populates="candidates")
+
+
+class SignalAlertJournal(Base):
+    """Stores delivered alerts and payload lineage for each detected signal."""
+    __tablename__ = "signal_alert_journal"
+    id                  = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    signal_id           = Column(UUID(as_uuid=False), ForeignKey("signals.id", ondelete="CASCADE"), nullable=False)
+    channel             = Column(String(20), nullable=False, default="telegram")
+    status              = Column(String(20), nullable=False, default="queued")  # queued|sent|failed
+    payload_json        = Column(JSONB, nullable=False, default=dict)
+    telegram_chat_id    = Column(String(40))
+    telegram_message_id = Column(String(40))
+    delivered_at        = Column(DateTime(timezone=True))
+    created_at          = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class TelegramFeedback(Base):
+    """User feedback captured from Telegram alert actions."""
+    __tablename__ = "telegram_feedback"
+    id           = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    signal_id    = Column(UUID(as_uuid=False), ForeignKey("signals.id", ondelete="CASCADE"), nullable=False)
+    alert_id     = Column(UUID(as_uuid=False), ForeignKey("signal_alert_journal.id", ondelete="SET NULL"))
+    action       = Column(String(40), nullable=False)  # watching|traded|useful|skip|closed
+    username     = Column(String(120))
+    chat_id      = Column(String(40))
+    raw_payload  = Column(JSONB)
+    created_at   = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class PatternReviewCycle(Base):
+    """Periodic reinforced-learning review snapshots for a pattern."""
+    __tablename__ = "pattern_review_cycles"
+    id                    = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    pattern_id            = Column(UUID(as_uuid=False), ForeignKey("patterns.id", ondelete="CASCADE"), nullable=False)
+    review_period_start   = Column(DateTime(timezone=True))
+    review_period_end     = Column(DateTime(timezone=True))
+    justified_analysis    = Column(Text, nullable=False)
+    suggested_changes     = Column(JSONB)
+    metrics_before_json   = Column(JSONB)
+    metrics_after_json    = Column(JSONB)
+    created_at            = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class TelegramSyncState(Base):
+    """Stores Telegram getUpdates offset to avoid duplicate feedback processing."""
+    __tablename__ = "telegram_sync_state"
+    id             = Column(Integer, primary_key=True, default=1)
+    last_update_id = Column(Integer, nullable=False, default=0)
+    updated_at     = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)

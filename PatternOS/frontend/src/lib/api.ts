@@ -70,6 +70,15 @@ export interface Signal {
     resistance?: number;
     stop_loss?: number;
   } | null;
+  /** Pre-inbox AI equity desk (stance, headline, body, sources, searx_used, crawl_used). */
+  equity_research_note?: Record<string, unknown> | null;
+  /** When enough OHLCV exists after the signal bar, projected % from entry (else null). */
+  forward_horizon_returns?: {
+    entry_bar_date?: string;
+    entry_close?: number;
+    horizons_trading_days?: Record<string, number>;
+    pct?: Record<string, number | null>;
+  } | null;
 }
 
 export interface Outcome {
@@ -132,9 +141,15 @@ export interface PatternEvent {
   timeframe: string;
   detected_at: string;
   entry_price: number | null;
+  /** Present when event came from a backtest run; use to scope roll-ups. */
+  backtest_run_id?: string | null;
   ret_5d: number | null;
   ret_10d: number | null;
   ret_20d: number | null;
+  /** ~1m / ~3m / ~6m forward (trading-day approx on daily bars). */
+  ret_21d: number | null;
+  ret_63d: number | null;
+  ret_126d: number | null;
   max_gain_20d: number | null;
   max_loss_20d: number | null;
   outcome: string | null;
@@ -160,15 +175,74 @@ export interface BacktestRun {
   completed_at: string | null;
 }
 
+/** LLM-estimated deltas vs current backtest (percentage points where noted). */
+export interface RulebookSuggestionDelta {
+  success_rate_pct?: number | null;
+  coverage_events_pct?: number | null;
+  avg_raw_ret_1w_pct?: number | null;
+  avg_raw_ret_1m_pct?: number | null;
+  avg_raw_ret_3m_pct?: number | null;
+}
+
+export interface RulebookSuggestion {
+  type: string;
+  condition: string;
+  rationale: string;
+  estimated_delta?: RulebookSuggestionDelta | null;
+  apply_patch?: Record<string, unknown> | null;
+}
+
 export interface PatternStudyResult {
   id: string;
   analysis: string;
   success_factors: string[] | null;
   failure_factors: string[] | null;
-  rulebook_suggestions: Array<{ type: string; condition: string; rationale: string }> | null;
+  rulebook_suggestions: RulebookSuggestion[] | null;
   confidence_improvements: string[] | null;
   created_at: string;
 }
+
+export interface PatternCandidate {
+  id: string;
+  title: string;
+  objective: string;
+  source_type: string;
+  screenshot_refs: string[] | null;
+  traits_json: Record<string, unknown>;
+  draft_rules_json: Record<string, unknown>;
+  conditions_json: Record<string, unknown>;
+  universes_json: string[];
+  status: string;
+  validation_summary: Record<string, unknown> | null;
+  revision_notes: string | null;
+  linked_pattern_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type PatternCandidateCreate = {
+  title: string;
+  objective: string;
+  source_type?: string;
+  screenshot_refs?: string[];
+  traits_json?: Record<string, unknown>;
+  draft_rules_json?: Record<string, unknown>;
+  conditions_json?: Record<string, unknown>;
+  universes_json?: string[];
+};
+
+export type PatternCandidateUpdate = {
+  title?: string;
+  objective?: string;
+  screenshot_refs?: string[];
+  traits_json?: Record<string, unknown>;
+  draft_rules_json?: Record<string, unknown>;
+  conditions_json?: Record<string, unknown>;
+  universes_json?: string[];
+  status?: string;
+  validation_summary?: Record<string, unknown>;
+  revision_notes?: string;
+};
 
 // ─── Universe ─────────────────────────────────────────────────────────────────
 
@@ -198,12 +272,34 @@ export const patternsApi = {
   setStatus: (id: string, status: string) =>
     request<{ ok: boolean }>(`/patterns/${id}/status?status=${status}`, { method: "PATCH" }),
   versions: (id: string) => request<PatternVersion[]>(`/patterns/${id}/versions`),
+  createVersion: (id: string, body: { rulebook_json: Record<string, unknown>; change_summary?: string | null }) =>
+    request<PatternVersion>(`/patterns/${id}/versions`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   learning: (id: string) => request<LearningLog[]>(`/patterns/${id}/learning`),
 };
 
 // ─── Studio ───────────────────────────────────────────────────────────────────
 
 export const studioApi = {
+  listCandidates: (status?: string) => {
+    const q = status ? `?status=${encodeURIComponent(status)}` : "";
+    return request<PatternCandidate[]>(`/studio/candidates${q}`);
+  },
+  getCandidate: (id: string) => request<PatternCandidate>(`/studio/candidates/${id}`),
+  createCandidate: (body: PatternCandidateCreate) =>
+    request<PatternCandidate>("/studio/candidates", { method: "POST", body: JSON.stringify(body) }),
+  updateCandidate: (id: string, body: PatternCandidateUpdate) =>
+    request<PatternCandidate>(`/studio/candidates/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  finalizeCandidate: (id: string) =>
+    request<{ ok: boolean; pattern_id: string; message?: string }>(
+      `/studio/candidates/${id}/finalize`,
+      { method: "POST", body: JSON.stringify({}) }
+    ),
   chat: (body: { pattern_id?: string; message: string }) =>
     request<ChatResponse>("/studio/chat", { method: "POST", body: JSON.stringify(body) }),
   history: (patternId: string) =>
@@ -215,10 +311,20 @@ export const studioApi = {
     }),
   getBacktestRuns: (patternId: string) =>
     request<BacktestRun[]>(`/studio/${patternId}/backtest/runs`),
-  getEvents: (patternId: string, params?: { symbol?: string; outcome?: string; limit?: number; offset?: number }) => {
+  getEvents: (
+    patternId: string,
+    params?: {
+      symbol?: string;
+      outcome?: string;
+      backtest_run_id?: string;
+      limit?: number;
+      offset?: number;
+    }
+  ) => {
     const p = new URLSearchParams();
     if (params?.symbol) p.set("symbol", params.symbol);
     if (params?.outcome) p.set("outcome", params.outcome);
+    if (params?.backtest_run_id) p.set("backtest_run_id", params.backtest_run_id);
     if (params?.limit !== undefined) p.set("limit", String(params.limit));
     if (params?.offset !== undefined) p.set("offset", String(params.offset));
     return request<{ total: number; events: PatternEvent[] }>(`/studio/${patternId}/events?${p}`);
@@ -233,6 +339,11 @@ export const studioApi = {
     request<PatternStudyResult>(`/studio/${patternId}/study`, { method: "POST", body: JSON.stringify({}) }),
   getLatestStudy: (patternId: string) =>
     request<PatternStudyResult | null>(`/studio/${patternId}/study/latest`),
+  applyStudyPatches: (patternId: string, body: { patches: Record<string, unknown>[]; change_summary: string }) =>
+    request<{ ok: boolean; version: number; pattern_version_id: string }>(
+      `/studio/${patternId}/study/apply-patches`,
+      { method: "POST", body: JSON.stringify(body) }
+    ),
 };
 
 // ─── Signals ─────────────────────────────────────────────────────────────────
@@ -282,6 +393,13 @@ export const scannerApi = {
   run: (patternId?: string, symbols?: string[], scope?: string) =>
     request<{ signals_created: number; symbols_scanned: number; duration_seconds: number }>(
       "/scanner/run",
-      { method: "POST", body: JSON.stringify({ pattern_id: patternId, symbols, scope: scope || "nifty50" }) }
+      {
+        method: "POST",
+        body: JSON.stringify({
+          pattern_id: patternId,
+          symbols: symbols?.length ? symbols : undefined,
+          scope: scope || "nifty50",
+        }),
+      }
     ),
 };

@@ -1,0 +1,21 @@
+# SearxNG + Crawl4AI for PatternOS signal pre-inbox research (optional but recommended).
+# Start: docker compose -f deploy/docker-compose.enrichment.yml up -d
+# PatternOS .env: SEARXNG_BASE_URL=http://127.0.0.1:18888  CRAWL4AI_BASE_URL=http://127.0.0.1:11236
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: patternos-searxng
+    ports:
+      - "18888:8080"
+    environment:
+      - BASE_URL=http://127.0.0.1:18888/
+    restart: unless-stopped
+
+  crawl4ai:
+    image: unclecode/crawl4ai:latest
+    container_name: patternos-crawl4ai
+    ports:
+      - "11236:11235"
+    shm_size: "2gb"
+    restart: unless-stopped

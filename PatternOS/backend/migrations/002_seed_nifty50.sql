@@ -1,7 +1,10 @@
 -- PatternOS — Seed Nifty 50 Universe
 -- yfinance uses NSE suffix: RELIANCE.NS etc.
 
-INSERT INTO universe (symbol, exchange, asset_class, name) VALUES
+-- Note: id required when table was created via SQLAlchemy (no DB-side default for UUID).
+INSERT INTO universe (id, symbol, exchange, asset_class, name, active)
+SELECT gen_random_uuid(), x.symbol, x.exchange, x.asset_class, x.name, true
+FROM (VALUES
 ('RELIANCE.NS',  'NSE', 'equity', 'Reliance Industries'),
 ('TCS.NS',       'NSE', 'equity', 'Tata Consultancy Services'),
 ('HDFCBANK.NS',  'NSE', 'equity', 'HDFC Bank'),
@@ -52,4 +55,5 @@ INSERT INTO universe (symbol, exchange, asset_class, name) VALUES
 ('BPCL.NS',      'NSE', 'equity', 'Bharat Petroleum'),
 ('SBILIFE.NS',   'NSE', 'equity', 'SBI Life Insurance'),
 ('HDFCLIFE.NS',  'NSE', 'equity', 'HDFC Life Insurance')
+) AS x(symbol, exchange, asset_class, name)
 ON CONFLICT (symbol, exchange) DO NOTHING;

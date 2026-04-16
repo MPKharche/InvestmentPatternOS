@@ -1,14 +1,13 @@
 """
 LLM routing layer for PatternOS.
 
-Model assignment:
-  chat()    → Gemini 2.5 Flash  — greetings, conversational turns, clarifying questions
-  reason()  → Claude Haiku 4.5  — rulebook JSON extraction, audits, structured reasoning
-  screen()  → Gemini 2.5 Flash  — fast scan-loop confidence scoring (high volume calls)
+Model assignment (defaults from Settings / .env):
+  chat()    → Grok 4.1 Fast — studio chat + multimodal
+  reason()  → Grok 4.1 Fast — rulebook JSON, audits, structured reasoning
+  screen()  → Grok 4.1 Fast — scan-loop scoring
 
 Fallback policy:
-  Every call automatically retries on the fallback model (Claude Haiku) if the primary
-  model returns an error, rate-limit, or empty response. Fallback errors propagate up.
+  All paths retry with LLM_FALLBACK_MODEL (DeepSeek V3.2) on primary failure.
 """
 import logging
 from openai import AsyncOpenAI, APIStatusError, APIConnectionError, APITimeoutError
@@ -77,7 +76,7 @@ async def chat(
 ) -> str:
     """
     Conversational turns — greetings, clarifying questions, general chat.
-    Primary: Gemini 2.5 Flash   Fallback: Claude Haiku
+    Primary: Grok 4.1 Fast   Fallback: DeepSeek V3.2
     Supports multimodal messages (content as list of text/image_url blocks).
     """
     return await _call_with_fallback(
@@ -97,11 +96,11 @@ async def reason(
 ) -> str:
     """
     Structured reasoning — rulebook JSON extraction, pattern audits, analysis.
-    Primary: Claude Haiku 4.5   Fallback: Gemini 2.5 Flash
+    Primary: Grok 4.1 Fast   Fallback: DeepSeek V3.2
     """
     return await _call_with_fallback(
         primary=settings.LLM_REASONING_MODEL,
-        fallback=settings.LLM_CHAT_MODEL,
+        fallback=settings.LLM_FALLBACK_MODEL,
         messages=messages,
         temperature=temperature,
         max_tokens=max_tokens,
@@ -116,7 +115,7 @@ async def screen(
 ) -> str:
     """
     Fast scan-loop scoring — called per symbol, must be cheap & fast.
-    Primary: Gemini 2.5 Flash   Fallback: Claude Haiku
+    Primary: Grok 4.1 Fast   Fallback: DeepSeek V3.2
     """
     return await _call_with_fallback(
         primary=settings.LLM_SCREENING_MODEL,

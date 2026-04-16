@@ -2,8 +2,8 @@
 LLM Screener — used inside the scanner loop.
 
 Routing:
-  llm_screen()       → screen() → Gemini 2.5 Flash  (fast, called per symbol)
-  llm_audit_pattern()→ reason() → Claude Haiku 4.5  (deep analysis, on-demand)
+  llm_screen()        → screen() → Grok 4.1 Fast (primary) / DeepSeek V3.2 (fallback)
+  llm_audit_pattern() → reason() → same stack
 """
 import json
 import re
@@ -70,7 +70,7 @@ Adjust score (0-100) and brief analysis."""
 async def llm_audit_pattern(pattern_name: str, outcomes_summary: str) -> str:
     """
     Pattern audit: reads outcome history, returns insight text for learning log.
-    Uses Claude Haiku (reasoning model) — deep structured analysis.
+    Uses reason() routing (Grok primary, DeepSeek fallback) — structured analysis.
     """
     messages = [
         {

@@ -1,0 +1,35 @@
+{
+  "finalized": true,
+  "pattern_type": "macd_divergence",
+  "description": "Bearish MACD divergence on Nifty 50 names: price higher high vs MACD lower high after rally; histogram turning negative.",
+  "direction": "bearish",
+  "timeframes": ["1d"],
+  "criteria": ["macd_divergence_bearish"],
+  "conditions": {
+    "divergence_types": { "bearish": { "macd": "12,26,9" } },
+    "trend": { "prior_trend": "bullish", "lookback_bars": 60, "min_move_pct": 6 },
+    "histogram_crossover": { "required": false }
+  },
+  "divergence": {
+    "lookback_bars": 70,
+    "swing_order": 5,
+    "min_swing_separation": 10,
+    "require_close_above_ema50": true,
+    "require_macd_histogram_negative": true,
+    "require_histogram_more_negative_than_3_bars_ago": true
+  },
+  "backtest": {
+    "outcome_horizon_days": 21,
+    "bearish_success_if_ret_below_pct": -2.0,
+    "bearish_failure_if_ret_above_pct": 2.5,
+    "min_bars_between_events": 15
+  },
+  "confidence_weights": {
+    "trend_alignment": 20,
+    "momentum": 30,
+    "pattern_tightness": 15,
+    "volume_confirmation": 20,
+    "breakout_quality": 15
+  },
+  "notes": "Live scan: 21 calendar-day cooldown per pattern+symbol. Backtest requires 126d forward history for full 6m return fields. Tune thresholds against your win-rate target."
+}

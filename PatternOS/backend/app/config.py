@@ -18,10 +18,10 @@ class Settings(BaseSettings):
     # OpenRouter
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
-    LLM_REASONING_MODEL: str = "anthropic/claude-haiku-4-5"        # rulebook, audits
-    LLM_CHAT_MODEL: str = "google/gemini-2.5-flash-preview"        # greetings, conversation
-    LLM_SCREENING_MODEL: str = "google/gemini-2.5-flash-preview"   # scan-loop scoring
-    LLM_FALLBACK_MODEL: str = "anthropic/claude-haiku-4-5"         # auto-retry fallback
+    LLM_REASONING_MODEL: str = "x-ai/grok-4.1-fast"               # rulebook, audits (OpenRouter)
+    LLM_CHAT_MODEL: str = "x-ai/grok-4.1-fast"                    # studio chat + vision
+    LLM_SCREENING_MODEL: str = "x-ai/grok-4.1-fast"                # scan-loop scoring
+    LLM_FALLBACK_MODEL: str = "deepseek/deepseek-v3.2"            # fallback on primary errors
 
     # Telegram
     TELEGRAM_BOT_TOKEN: str = ""
@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     BACKEND_PORT: int = 8000
     FRONTEND_PORT: int = 3000
     SIGNAL_CONFIDENCE_THRESHOLD: float = 70.0
+
+    # Optional: SearxNG + Crawl4AI for pre-inbox signal equity review (see deploy/docker-compose.enrichment.yml)
+    SEARXNG_BASE_URL: str = ""
+    CRAWL4AI_BASE_URL: str = ""
+    SIGNAL_DEEP_REVIEW_ENABLED: bool = True
     CORS_ORIGINS: str = "http://localhost:3000"
 
     @property

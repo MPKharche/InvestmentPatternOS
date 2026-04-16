@@ -35,6 +35,9 @@ Backtest Results:
 - Avg 5d return: {run_stats.get("avg_ret_5d")}%
 - Avg 10d return: {run_stats.get("avg_ret_10d")}%
 - Avg 20d return: {run_stats.get("avg_ret_20d")}%
+- Avg ~1m (21d) return: {run_stats.get("avg_ret_21d")}%
+- Avg ~3m (63d) return: {run_stats.get("avg_ret_63d")}%
+- Avg ~6m (126d) return: {run_stats.get("avg_ret_126d")}%
 
 Sample successful events (first 5):
 {json.dumps([e for e in sample_events if e.get("outcome") == "success"][:5], indent=2)}
@@ -53,7 +56,15 @@ Format your response as a JSON object with keys:
 - "analysis" (string): 3-4 paragraph narrative analysis
 - "success_factors" (array of strings): bullet points of what makes it work
 - "failure_factors" (array of strings): bullet points of why it fails
-- "rulebook_suggestions" (array of objects with "type", "condition", "rationale"): additional criteria to add
+- "rulebook_suggestions" (array of objects). Each object MUST include:
+  - "type" (string): e.g. filter, threshold, universe
+  - "condition" (string): human-readable rule text
+  - "rationale" (string): why it helps
+  - "estimated_delta" (object, optional but preferred): plausible improvements vs current backtest, numeric estimates:
+      "success_rate_pct" (number): expected change in success rate in percentage points (e.g. 5 means +5pp)
+      "coverage_events_pct" (number): expected change in share of events kept (negative = fewer signals)
+      "avg_raw_ret_1w_pct", "avg_raw_ret_1m_pct", "avg_raw_ret_3m_pct" (numbers): expected change in average raw forward returns (5d/21d/63d) in percentage points
+  - "apply_patch" (object, optional): a SMALL partial rulebook JSON fragment to deep-merge if the user accepts this suggestion (e.g. {{"criteria": ["RSI > 40"]}} or {{"min_adx": 20}} — only keys you are confident exist or should be added; keep minimal)
 - "confidence_improvements" (array of strings): how to adjust confidence scoring
 - "risk_guidelines" (object with "stop_loss_atr_multiple", "take_profit_atr_multiple", "notes")
 """

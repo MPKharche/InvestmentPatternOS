@@ -5,19 +5,34 @@ import {
   scannerApi,
   studioApi,
   type Pattern,
+  type PatternCandidate,
   type ChatMessage,
   type ChatResponse,
   type PatternEvent,
   type BacktestRun,
   type PatternStudyResult,
+  type RulebookSuggestion,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { BacktestResults } from "@/components/backtest-results";
+import { BacktestEventsTable } from "@/components/backtest-events-table";
+import { EventChartDialog } from "@/components/event-chart-dialog";
+import { inferDirectionFromRulebook, type PatternDirection } from "@/lib/pattern-pnl";
 import { toast } from "sonner";
 import {
   FileText,
@@ -31,12 +46,17 @@ import {
   List,
   BookOpen,
   MessageSquare,
-  ExternalLink,
   RefreshCw,
   Loader2,
+  Sparkles,
 } from "lucide-react";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
+
+const UNIVERSE_OPTIONS: { id: string; label: string }[] = [
+  { id: "nifty50", label: "Nifty 50" },
+  { id: "full", label: "Full universe (~326)" },
+];
 const ACCEPT = ".jpg,.jpeg,.png,.webp,.gif,.pdf,.docx,.doc,.txt,.md";
 
 type ActiveTab = "define" | "backtest" | "events" | "study";
@@ -53,21 +73,6 @@ function pctColor(v: number | null | undefined, invert = false): string {
   if (v == null) return "text-muted-foreground";
   const positive = invert ? v < 0 : v > 0;
   return positive ? "text-green-400" : v === 0 ? "text-muted-foreground" : "text-red-400";
-}
-
-function OutcomeBadge({ outcome }: { outcome: string | null }) {
-  if (!outcome) return <Badge variant="outline">—</Badge>;
-  const map: Record<string, string> = {
-    success: "bg-green-500/20 text-green-400 border-green-500/30",
-    failure: "bg-red-500/20 text-red-400 border-red-500/30",
-    neutral: "bg-gray-500/20 text-gray-400 border-gray-500/30",
-    pending: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
-  };
-  return (
-    <Badge className={`text-xs capitalize ${map[outcome] ?? "bg-muted"}`}>
-      {outcome}
-    </Badge>
-  );
 }
 
 // ─── File icon ────────────────────────────────────────────────────────────────
@@ -750,130 +755,22 @@ function BacktestTab({
   );
 }
 
-// ─── EVENT CARD ───────────────────────────────────────────────────────────────
-
-function EventCard({
-  event,
-  onFeedback,
-}: {
-  event: PatternEvent;
-  onFeedback: (id: string, feedback: string, notes: string) => void;
-}) {
-  const [notes, setNotes] = useState(event.user_notes ?? "");
-  const [expanded, setExpanded] = useState(false);
-
-  const handleFeedback = (fb: string) => {
-    onFeedback(event.id, fb, notes);
-  };
-
-  const handleNotesBlur = () => {
-    if (notes !== (event.user_notes ?? "")) {
-      onFeedback(event.id, event.user_feedback ?? "", notes);
-    }
-  };
-
-  return (
-    <Card className="border-border/60">
-      <CardContent className="p-4 space-y-3">
-        {/* Header row */}
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <span className="font-mono font-semibold text-sm">{event.symbol}</span>
-            <span className="text-xs text-muted-foreground ml-2">{event.detected_at}</span>
-            {event.entry_price != null && (
-              <span className="text-xs text-muted-foreground ml-2">
-                @ {event.entry_price.toFixed(2)}
-              </span>
-            )}
-          </div>
-          <OutcomeBadge outcome={event.outcome} />
-        </div>
-
-        {/* Returns row */}
-        <div className="grid grid-cols-5 gap-2 text-xs">
-          {[
-            { label: "5d", value: event.ret_5d },
-            { label: "10d", value: event.ret_10d },
-            { label: "20d", value: event.ret_20d },
-            { label: "Max+", value: event.max_gain_20d },
-            { label: "Max−", value: event.max_loss_20d, invert: true },
-          ].map(({ label, value, invert }) => (
-            <div key={label} className="text-center">
-              <p className="text-muted-foreground">{label}</p>
-              <p className={`font-medium ${pctColor(value, invert)}`}>{pct(value, 1)}</p>
-            </div>
-          ))}
-        </div>
-
-        {/* Indicators */}
-        {event.indicator_snapshot && Object.keys(event.indicator_snapshot).length > 0 && (
-          <div className="flex flex-wrap gap-2 text-xs">
-            {Object.entries(event.indicator_snapshot)
-              .slice(0, 5)
-              .map(([k, v]) => (
-                <span key={k} className="bg-muted px-2 py-0.5 rounded text-muted-foreground font-mono">
-                  {k}: {v.toFixed(2)}
-                </span>
-              ))}
-          </div>
-        )}
-
-        {/* Actions row */}
-        <div className="flex items-center gap-2 flex-wrap">
-          {/* Feedback buttons */}
-          {(["valid", "invalid", "unsure"] as const).map((fb) => (
-            <button
-              key={fb}
-              onClick={() => handleFeedback(fb)}
-              className={`text-xs px-2 py-1 rounded border transition-colors ${
-                event.user_feedback === fb
-                  ? fb === "valid"
-                    ? "bg-green-500/20 border-green-500/40 text-green-400"
-                    : fb === "invalid"
-                    ? "bg-red-500/20 border-red-500/40 text-red-400"
-                    : "bg-yellow-500/20 border-yellow-500/40 text-yellow-400"
-                  : "border-border text-muted-foreground hover:border-foreground/40"
-              }`}
-            >
-              {fb === "valid" ? "✓ Valid" : fb === "invalid" ? "✗ Invalid" : "? Unsure"}
-            </button>
-          ))}
-
-          {/* View on Chart */}
-          <button
-            onClick={() =>
-              window.open(`/chart?symbol=${event.symbol}`, "_blank")
-            }
-            className="ml-auto flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
-          >
-            <ExternalLink className="h-3 w-3" />
-            View Chart
-          </button>
-
-          {/* Notes toggle */}
-          <button
-            onClick={() => setExpanded((o) => !o)}
-            className="text-xs text-muted-foreground hover:text-foreground"
-          >
-            {expanded ? "Hide notes ▲" : "Add notes ▼"}
-          </button>
-        </div>
-
-        {expanded && (
-          <textarea
-            className="w-full h-16 text-xs bg-muted/40 border border-border rounded p-2 text-foreground resize-none focus:outline-none"
-            placeholder="Add notes about this event..."
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            onBlur={handleNotesBlur}
-          />
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
 // ─── EVENTS TAB ───────────────────────────────────────────────────────────────
+
+function formatSuggestionDelta(d: RulebookSuggestion["estimated_delta"]): string | null {
+  if (!d) return null;
+  const parts: string[] = [];
+  const add = (label: string, v: number | null | undefined) => {
+    if (v == null || Number.isNaN(v)) return;
+    parts.push(`${label} ${v >= 0 ? "+" : ""}${v.toFixed(1)}pp`);
+  };
+  add("success", d.success_rate_pct ?? undefined);
+  add("coverage", d.coverage_events_pct ?? undefined);
+  add("raw 1w", d.avg_raw_ret_1w_pct ?? undefined);
+  add("raw 1m", d.avg_raw_ret_1m_pct ?? undefined);
+  add("raw 3m", d.avg_raw_ret_3m_pct ?? undefined);
+  return parts.length ? parts.join(" · ") : null;
+}
 
 function EventsTab({ patternId }: { patternId: string }) {
   const [events, setEvents] = useState<PatternEvent[]>([]);
@@ -883,8 +780,29 @@ function EventsTab({ patternId }: { patternId: string }) {
   const [symbolFilter, setSymbolFilter] = useState("");
   const [outcomeFilter, setOutcomeFilter] = useState("all");
   const [feedbackFilter, setFeedbackFilter] = useState("all");
+  const [direction, setDirection] = useState<PatternDirection>("unknown");
+  const [chartEvent, setChartEvent] = useState<PatternEvent | null>(null);
+  const [chartOpen, setChartOpen] = useState(false);
 
-  const LIMIT = 50;
+  const LIMIT = 100;
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const vers = await patternsApi.versions(patternId);
+        const top = [...vers].sort((a, b) => b.version - a.version)[0];
+        if (!cancelled && top?.rulebook_json) {
+          setDirection(inferDirectionFromRulebook(top.rulebook_json as Record<string, unknown>));
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [patternId]);
 
   const loadEvents = useCallback(
     async (reset = false) => {
@@ -928,21 +846,19 @@ function EventsTab({ patternId }: { patternId: string }) {
     );
   };
 
-  // Client-side feedback filter
   const filtered =
     feedbackFilter === "all"
       ? events
       : feedbackFilter === "unreviewed"
-      ? events.filter((e) => !e.user_feedback)
-      : events.filter((e) => e.user_feedback === feedbackFilter);
+        ? events.filter((e) => !e.user_feedback)
+        : events.filter((e) => e.user_feedback === feedbackFilter);
 
   return (
     <div className="flex flex-col gap-3 flex-1 min-h-0">
-      {/* Filters */}
       <div className="flex flex-wrap gap-2 items-center">
         <input
           type="text"
-          placeholder="Symbol search..."
+          placeholder="Symbol…"
           value={symbolFilter}
           onChange={(e) => setSymbolFilter(e.target.value)}
           className="h-8 rounded-md border border-border bg-muted px-3 text-xs w-36 focus:outline-none"
@@ -979,8 +895,7 @@ function EventsTab({ patternId }: { patternId: string }) {
         </span>
       </div>
 
-      {/* Event list */}
-      <div className="overflow-y-auto flex-1 space-y-2">
+      <div className="overflow-y-auto flex-1 space-y-2 min-h-0">
         {loading && filtered.length === 0 && (
           <div className="text-center py-8">
             <Loader2 className="h-5 w-5 animate-spin mx-auto text-muted-foreground" />
@@ -991,20 +906,30 @@ function EventsTab({ patternId }: { patternId: string }) {
             No events found. Run a backtest first.
           </div>
         )}
-        {filtered.map((e) => (
-          <EventCard key={e.id} event={e} onFeedback={handleFeedback} />
-        ))}
+        {filtered.length > 0 && (
+          <BacktestEventsTable
+            events={filtered}
+            direction={direction}
+            onOpenChart={(e) => {
+              setChartEvent(e);
+              setChartOpen(true);
+            }}
+            onFeedback={handleFeedback}
+          />
+        )}
         {events.length < total && (
           <Button
             variant="outline"
-            className="w-full text-xs"
+            className="w-full text-xs h-8"
             onClick={() => loadEvents(false)}
             disabled={loading}
           >
-            {loading ? "Loading..." : `Load more (${total - events.length} remaining)`}
+            {loading ? "Loading…" : `Load more (${total - events.length})`}
           </Button>
         )}
       </div>
+
+      <EventChartDialog open={chartOpen} onOpenChange={setChartOpen} event={chartEvent} direction={direction} />
     </div>
   );
 }
@@ -1015,6 +940,14 @@ function StudyTab({ patternId }: { patternId: string }) {
   const [study, setStudy] = useState<PatternStudyResult | null>(null);
   const [generating, setGenerating] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [selectedSuggest, setSelectedSuggest] = useState<Record<number, boolean>>({});
+  const [applying, setApplying] = useState(false);
+  const [revertRulebook, setRevertRulebook] = useState<Record<string, unknown> | null>(null);
+  const [revertFromVersion, setRevertFromVersion] = useState<number | null>(null);
+
+  useEffect(() => {
+    setSelectedSuggest({});
+  }, [study?.id]);
 
   useEffect(() => {
     if (!patternId) return;
@@ -1032,11 +965,64 @@ function StudyTab({ patternId }: { patternId: string }) {
     try {
       const result = await studioApi.generateStudy(patternId);
       setStudy(result);
+      setRevertRulebook(null);
+      setRevertFromVersion(null);
       toast.success("Study generated!");
     } catch (e) {
       toast.error(`Study failed: ${e instanceof Error ? e.message : "Unknown error"}`);
     } finally {
       setGenerating(false);
+    }
+  };
+
+  const handleApplyStudyPatches = async () => {
+    if (!study?.rulebook_suggestions?.length) return;
+    const patches = study.rulebook_suggestions
+      .map((s, i) => (selectedSuggest[i] && s.apply_patch ? s.apply_patch : null))
+      .filter((p): p is Record<string, unknown> => !!p && typeof p === "object");
+    if (!patches.length) {
+      toast.error("Select suggestions that include an apply_patch payload from the model.");
+      return;
+    }
+    setApplying(true);
+    try {
+      const vers = await patternsApi.versions(patternId);
+      const cur = [...vers].sort((a, b) => b.version - a.version)[0];
+      const snapshot =
+        cur?.rulebook_json && typeof cur.rulebook_json === "object"
+          ? (structuredClone(cur.rulebook_json) as Record<string, unknown>)
+          : null;
+      await studioApi.applyStudyPatches(patternId, {
+        patches,
+        change_summary: `Study apply (${patches.length} patch(es))`,
+      });
+      if (snapshot) {
+        setRevertRulebook(snapshot);
+        setRevertFromVersion(cur.version);
+      }
+      toast.success("Rulebook updated from study.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message.slice(0, 120) : "Apply failed");
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const handleRevertStudy = async () => {
+    if (!revertRulebook) return;
+    setApplying(true);
+    try {
+      await patternsApi.createVersion(patternId, {
+        rulebook_json: revertRulebook,
+        change_summary: `Revert study merge (restore snapshot before v${(revertFromVersion ?? 0) + 1})`,
+      });
+      setRevertRulebook(null);
+      setRevertFromVersion(null);
+      toast.success("Reverted to snapshot before last study apply.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message.slice(0, 120) : "Revert failed");
+    } finally {
+      setApplying(false);
     }
   };
 
@@ -1141,21 +1127,82 @@ function StudyTab({ patternId }: { patternId: string }) {
           {/* Rulebook suggestions */}
           {study.rulebook_suggestions && study.rulebook_suggestions.length > 0 && (
             <Card>
-              <CardHeader className="pb-2">
+              <CardHeader className="pb-2 flex flex-row flex-wrap items-center justify-between gap-2">
                 <CardTitle className="text-sm">Rulebook Suggestions</CardTitle>
+                <div className="flex flex-wrap gap-2">
+                  {revertRulebook && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="text-xs h-8"
+                      disabled={applying}
+                      onClick={() => void handleRevertStudy()}
+                    >
+                      Revert last apply
+                    </Button>
+                  )}
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="text-xs h-8"
+                    disabled={applying || generating}
+                    onClick={() => void handleApplyStudyPatches()}
+                  >
+                    {applying ? "Applying…" : "Apply selected patches"}
+                  </Button>
+                </div>
               </CardHeader>
-              <CardContent className="space-y-3">
-                {study.rulebook_suggestions.map((s, i) => (
-                  <div key={i} className="border border-border rounded-md p-3 space-y-1">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline" className="text-xs font-mono">
-                        {s.type}
-                      </Badge>
-                      <span className="text-xs text-foreground/80">{s.condition}</span>
+              <CardContent className="space-y-2">
+                <p className="text-[10px] text-muted-foreground">
+                  Tick suggestions with a mergeable <span className="font-mono">apply_patch</span> from the model,
+                  then apply. Revert restores the rulebook snapshot taken immediately before that apply (new version
+                  created).
+                </p>
+                {study.rulebook_suggestions.map((s, i) => {
+                  const deltaLine = formatSuggestionDelta(s.estimated_delta);
+                  const hasPatch = !!(s.apply_patch && typeof s.apply_patch === "object");
+                  return (
+                    <div
+                      key={i}
+                      className="border border-border rounded-md px-2 py-2 space-y-1 text-[11px] leading-snug"
+                    >
+                      <div className="flex items-start gap-2">
+                        <label className="flex items-start gap-2 cursor-pointer shrink-0 pt-0.5">
+                          <input
+                            type="checkbox"
+                            className="mt-0.5 rounded border-border"
+                            checked={!!selectedSuggest[i]}
+                            disabled={!hasPatch}
+                            onChange={() =>
+                              setSelectedSuggest((prev) => ({ ...prev, [i]: !prev[i] }))
+                            }
+                          />
+                          <span className="sr-only">Accept suggestion {i + 1}</span>
+                        </label>
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant="outline" className="text-[10px] font-mono">
+                              {s.type}
+                            </Badge>
+                            <span className="text-foreground/90">{s.condition}</span>
+                          </div>
+                          {deltaLine && (
+                            <p className="font-mono text-[10px] text-amber-200/90">
+                              Est. vs baseline: {deltaLine}
+                            </p>
+                          )}
+                          <p className="text-muted-foreground">{s.rationale}</p>
+                          {!hasPatch && (
+                            <p className="text-[10px] text-muted-foreground italic">
+                              No apply_patch — informational only; regenerate study for structured patches.
+                            </p>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                    <p className="text-xs text-muted-foreground">{s.rationale}</p>
-                  </div>
-                ))}
+                  );
+                })}
               </CardContent>
             </Card>
           )}
@@ -1199,9 +1246,21 @@ export default function StudioPage() {
   const [activeTab, setActiveTab] = useState<ActiveTab>("define");
   const [backtestRuns, setBacktestRuns] = useState<BacktestRun[]>([]);
 
+  const [candidates, setCandidates] = useState<PatternCandidate[]>([]);
+  const [candidateId, setCandidateId] = useState<string | null>(null);
+  const [createCandidateOpen, setCreateCandidateOpen] = useState(false);
+  const [newCandTitle, setNewCandTitle] = useState("");
+  const [newCandObjective, setNewCandObjective] = useState("");
+  const [newCandUniverses, setNewCandUniverses] = useState<string[]>(["nifty50"]);
+  const [candidateBusy, setCandidateBusy] = useState<"save" | "finalize" | null>(null);
+
+  const [scanRunScope, setScanRunScope] = useState<"nifty50" | "full" | "custom">("nifty50");
+  const [scanRunSymbols, setScanRunSymbols] = useState("");
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadPatterns = () => patternsApi.list().then(setPatterns);
+  const loadCandidates = useCallback(() => studioApi.listCandidates().then(setCandidates).catch(() => {}), []);
 
   const loadBacktestRuns = useCallback(() => {
     if (!currentPatternId) return;
@@ -1213,7 +1272,110 @@ export default function StudioPage() {
 
   useEffect(() => {
     loadPatterns();
-  }, []);
+    loadCandidates();
+  }, [loadCandidates]);
+
+  const selectedCandidate = candidates.find((c) => c.id === candidateId) ?? null;
+
+  const hasPersistedOrLocalRulebook =
+    (rulebookDraft && Object.keys(rulebookDraft).length > 0) ||
+    (selectedCandidate?.draft_rules_json &&
+      typeof selectedCandidate.draft_rules_json === "object" &&
+      Object.keys(selectedCandidate.draft_rules_json).length > 0);
+
+  const toggleNewCandUniverse = (id: string) => {
+    setNewCandUniverses((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id].sort()
+    );
+  };
+
+  const applyCandidateToRulebook = async (id: string) => {
+    try {
+      const c = await studioApi.getCandidate(id);
+      const draft = c.draft_rules_json;
+      setRulebookDraft(draft && Object.keys(draft).length > 0 ? draft : null);
+    } catch {
+      toast.error("Could not load candidate");
+    }
+  };
+
+  const handleCandidateSelect = (v: string | null) => {
+    if (v === "none" || v == null || v === "") {
+      setCandidateId(null);
+      return;
+    }
+    setCandidateId(v);
+    void applyCandidateToRulebook(v);
+  };
+
+  const handleCreateCandidate = async () => {
+    const title = newCandTitle.trim();
+    const objective = newCandObjective.trim();
+    if (!title || !objective) {
+      toast.error("Title and objective are required");
+      return;
+    }
+    const universes = newCandUniverses.length ? newCandUniverses : ["nifty50"];
+    try {
+      const created = await studioApi.createCandidate({
+        title,
+        objective,
+        source_type: "studio",
+        universes_json: universes,
+        draft_rules_json: rulebookDraft && Object.keys(rulebookDraft).length ? rulebookDraft : {},
+      });
+      setCandidates((prev) => [created, ...prev.filter((x) => x.id !== created.id)]);
+      setCandidateId(created.id);
+      setCreateCandidateOpen(false);
+      setNewCandTitle("");
+      setNewCandObjective("");
+      setNewCandUniverses(["nifty50"]);
+      toast.success("Candidate created — link it to your chat rulebook with Save.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message.slice(0, 120) : "Create failed");
+    }
+  };
+
+  const handleSaveCandidateDraft = async () => {
+    if (!candidateId || !rulebookDraft) {
+      toast.error("Select a candidate and define a rulebook first");
+      return;
+    }
+    setCandidateBusy("save");
+    try {
+      await studioApi.updateCandidate(candidateId, { draft_rules_json: rulebookDraft });
+      await loadCandidates();
+      toast.success("Candidate draft saved");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message.slice(0, 120) : "Save failed");
+    } finally {
+      setCandidateBusy(null);
+    }
+  };
+
+  const handleFinalizeCandidate = async () => {
+    if (!candidateId) return;
+    setCandidateBusy("finalize");
+    try {
+      if (rulebookDraft && Object.keys(rulebookDraft).length > 0) {
+        await studioApi.updateCandidate(candidateId, { draft_rules_json: rulebookDraft });
+        await loadCandidates();
+      }
+      const res = await studioApi.finalizeCandidate(candidateId);
+      toast.success("Candidate finalized — production pattern created.");
+      await loadCandidates();
+      await loadPatterns();
+      if (res.pattern_id) {
+        setSelectedId(res.pattern_id);
+        setCurrentPatternId(res.pattern_id);
+      }
+      setCandidateId(null);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message.slice(0, 220) : "Finalize failed");
+    } finally {
+      setCandidateBusy(null);
+    }
+  };
 
   useEffect(() => {
     if (selectedId && selectedId !== "new") {
@@ -1222,11 +1384,22 @@ export default function StudioPage() {
         .then((r) => r.json())
         .then(setHistory)
         .catch(() => {});
+      patternsApi
+        .versions(selectedId)
+        .then((vers) => {
+          const top = [...vers].sort((a, b) => b.version - a.version)[0];
+          setRulebookDraft(
+            top?.rulebook_json && Object.keys(top.rulebook_json).length
+              ? (top.rulebook_json as Record<string, unknown>)
+              : null
+          );
+        })
+        .catch(() => setRulebookDraft(null));
     } else {
       setHistory([]);
       setCurrentPatternId(null);
+      setRulebookDraft(null);
     }
-    setRulebookDraft(null);
     setAttachments([]);
     setBacktestRuns([]);
   }, [selectedId]);
@@ -1304,12 +1477,29 @@ export default function StudioPage() {
 
   const runScan = async () => {
     if (!currentPatternId) return;
+    if (scanRunScope === "custom" && !scanRunSymbols.trim()) {
+      toast.error("Enter at least one symbol for a custom scan");
+      return;
+    }
     setScanning(true);
     try {
-      // Scan using nifty50 by default (consistent with backtest default)
-      const res = await scannerApi.run(currentPatternId, undefined, "nifty50");
+      const customList =
+        scanRunScope === "custom"
+          ? scanRunSymbols
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : undefined;
+      const scope = scanRunScope === "custom" ? "nifty50" : scanRunScope;
+      const res = await scannerApi.run(currentPatternId, customList, scope);
+      const scopeLabel =
+        scanRunScope === "custom"
+          ? `${customList?.length ?? 0} custom symbol(s)`
+          : scanRunScope === "full"
+            ? "full universe"
+            : "Nifty 50 scope";
       toast.success(
-        `Scan complete: ${res.signals_created} signals from ${res.symbols_scanned} Nifty 50 symbols in ${res.duration_seconds}s`
+        `Scan complete: ${res.signals_created} signals · ${res.symbols_scanned} symbols (${scopeLabel}) · ${res.duration_seconds}s`
       );
     } catch {
       toast.error("Scan failed");
@@ -1375,12 +1565,162 @@ export default function StudioPage() {
         </Select>
 
         {currentPatternId && (
-          <Button size="sm" variant="outline" onClick={runScan} disabled={scanning}>
-            <Play className="h-3 w-3 mr-1" />
-            {scanning ? "Scanning..." : "Run Scan"}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2 ml-auto">
+            <Select
+              value={scanRunScope}
+              onValueChange={(v) => {
+                if (v === "nifty50" || v === "full" || v === "custom") setScanRunScope(v);
+              }}
+            >
+              <SelectTrigger className="h-8 w-[140px] text-xs">
+                <SelectValue placeholder="Scan scope" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="nifty50" className="text-xs">
+                  Scan: Nifty 50
+                </SelectItem>
+                <SelectItem value="full" className="text-xs">
+                  Scan: Full universe
+                </SelectItem>
+                <SelectItem value="custom" className="text-xs">
+                  Scan: Custom symbols
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            {scanRunScope === "custom" && (
+              <input
+                type="text"
+                placeholder="RELIANCE.NS, TCS.NS…"
+                value={scanRunSymbols}
+                onChange={(e) => setScanRunSymbols(e.target.value)}
+                className="h-8 rounded-md border border-border bg-muted px-2 text-xs w-48 focus:outline-none"
+              />
+            )}
+            <Button size="sm" variant="outline" onClick={runScan} disabled={scanning}>
+              <Play className="h-3 w-3 mr-1" />
+              {scanning ? "Scanning..." : "Run Scan"}
+            </Button>
+          </div>
         )}
       </div>
+
+      {/* Candidate lifecycle (API-backed) */}
+      <div className="flex flex-wrap items-center gap-2 shrink-0 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs">
+        <Sparkles className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+        <span className="text-muted-foreground font-medium">Candidate</span>
+        <Select value={candidateId ?? "none"} onValueChange={handleCandidateSelect}>
+          <SelectTrigger className="h-8 w-[220px] text-xs">
+            <SelectValue placeholder="None (chat-only draft)" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none" className="text-xs">
+              None — chat-only
+            </SelectItem>
+            {candidates.map((c) => (
+              <SelectItem key={c.id} value={c.id} className="text-xs">
+                {c.title}{" "}
+                <span className="text-muted-foreground">({c.status})</span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button size="sm" variant="secondary" className="h-8 text-xs" onClick={() => setCreateCandidateOpen(true)}>
+          <Plus className="h-3 w-3 mr-1" />
+          New
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-8 text-xs"
+          disabled={!candidateId || !rulebookDraft || candidateBusy !== null}
+          onClick={() => void handleSaveCandidateDraft()}
+        >
+          {candidateBusy === "save" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+          Save to candidate
+        </Button>
+        <Button
+          size="sm"
+          className="h-8 text-xs"
+          disabled={
+            !candidateId ||
+            !selectedCandidate ||
+            selectedCandidate.status === "approved_for_production" ||
+            !hasPersistedOrLocalRulebook ||
+            candidateBusy !== null
+          }
+          title={
+            !hasPersistedOrLocalRulebook
+              ? "Define a rulebook in the Rulebook panel (Define tab), then finalize"
+              : undefined
+          }
+          onClick={() => void handleFinalizeCandidate()}
+        >
+          {candidateBusy === "finalize" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+          Finalize → pattern
+        </Button>
+        {selectedCandidate?.universes_json?.length ? (
+          <span className="text-muted-foreground ml-auto hidden sm:inline">
+            Universes: {selectedCandidate.universes_json.join(", ")}
+          </span>
+        ) : null}
+      </div>
+
+      <Dialog open={createCandidateOpen} onOpenChange={setCreateCandidateOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>New pattern candidate</DialogTitle>
+            <DialogDescription>
+              Stored via <code className="text-[10px]">POST /api/v1/studio/candidates</code>. Build the rulebook in
+              Define, then use Finalize (it auto-saves from the panel first) or Save to candidate, then Finalize.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <div className="space-y-1.5">
+              <Label htmlFor="cand-title">Title</Label>
+              <Input
+                id="cand-title"
+                value={newCandTitle}
+                onChange={(e) => setNewCandTitle(e.target.value)}
+                placeholder="e.g. Bull flag continuation"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="cand-obj">Objective</Label>
+              <Textarea
+                id="cand-obj"
+                value={newCandObjective}
+                onChange={(e) => setNewCandObjective(e.target.value)}
+                rows={3}
+                className="resize-none text-xs"
+                placeholder="What should this pattern detect?"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Default scan universes (product metadata)</Label>
+              <div className="flex flex-wrap gap-2">
+                {UNIVERSE_OPTIONS.map((u) => (
+                  <Button
+                    key={u.id}
+                    type="button"
+                    size="sm"
+                    variant={newCandUniverses.includes(u.id) ? "default" : "outline"}
+                    className="h-7 text-xs"
+                    onClick={() => toggleNewCandUniverse(u.id)}
+                  >
+                    {u.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreateCandidateOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void handleCreateCandidate()}>Create</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Tab bar */}
       <div className="flex gap-1 shrink-0 border-b border-border pb-0">

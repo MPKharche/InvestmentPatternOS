@@ -94,6 +94,57 @@ class ChatResponse(BaseModel):
     rulebook_draft: Optional[dict[str, Any]] = None
 
 
+class StudyApplyPatchesRequest(BaseModel):
+    """Merge partial rulebook fragments (from study suggestions) into current version."""
+    patches: list[dict[str, Any]] = Field(default_factory=list)
+    change_summary: str = "Applied study patches"
+
+
+class PatternCandidateCreate(BaseModel):
+    title: str
+    objective: str
+    source_type: str = "studio"
+    screenshot_refs: list[str] = Field(default_factory=list)
+    traits_json: dict[str, Any] = Field(default_factory=dict)
+    draft_rules_json: dict[str, Any] = Field(default_factory=dict)
+    conditions_json: dict[str, Any] = Field(default_factory=dict)
+    universes_json: list[str] = Field(default_factory=list)
+
+
+class PatternCandidateUpdate(BaseModel):
+    title: Optional[str] = None
+    objective: Optional[str] = None
+    screenshot_refs: Optional[list[str]] = None
+    traits_json: Optional[dict[str, Any]] = None
+    draft_rules_json: Optional[dict[str, Any]] = None
+    conditions_json: Optional[dict[str, Any]] = None
+    universes_json: Optional[list[str]] = None
+    status: Optional[str] = None
+    validation_summary: Optional[dict[str, Any]] = None
+    revision_notes: Optional[str] = None
+
+
+class PatternCandidateOut(BaseModel):
+    id: str
+    title: str
+    objective: str
+    source_type: str
+    screenshot_refs: Optional[list[str]] = None
+    traits_json: dict[str, Any]
+    draft_rules_json: dict[str, Any]
+    conditions_json: dict[str, Any]
+    universes_json: list[str]
+    status: str
+    validation_summary: Optional[dict[str, Any]] = None
+    revision_notes: Optional[str] = None
+    linked_pattern_id: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 # ─── Signals ─────────────────────────────────────────────────────────────────
 
 class SignalOut(BaseModel):
@@ -109,6 +160,8 @@ class SignalOut(BaseModel):
     status: str
     llm_analysis: Optional[str] = None
     key_levels: Optional[dict[str, Any]] = None
+    forward_horizon_returns: Optional[dict[str, Any]] = None
+    equity_research_note: Optional[dict[str, Any]] = None
 
     class Config:
         from_attributes = True
@@ -120,6 +173,13 @@ class SignalReviewRequest(BaseModel):
     sl_price: Optional[float] = None
     target_price: Optional[float] = None
     notes: Optional[str] = None
+
+
+class TelegramFeedbackIn(BaseModel):
+    action: str = Field(..., pattern="^(watching|traded|useful|skip|closed)$")
+    username: Optional[str] = None
+    chat_id: Optional[str] = None
+    raw_payload: Optional[dict[str, Any]] = None
 
 
 # ─── Outcomes ────────────────────────────────────────────────────────────────

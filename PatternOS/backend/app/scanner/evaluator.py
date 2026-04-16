@@ -16,14 +16,54 @@ import pandas as pd
 import numpy as np
 from typing import Any
 
-from app.scanner.indicators import latest_indicators
+from app.scanner.indicators import latest_indicators, compute_indicators
+from app.scanner.rulebook_criteria import extract_criteria_and_direction, is_criteria_only_scan
+from app.scanner.criteria_checks import run_criteria_at_index
 
 
 def evaluate_pattern(df: pd.DataFrame, rulebook: dict[str, Any]) -> tuple[float, dict]:
     """
     Returns (base_score 0-100, breakdown dict).
     breakdown: {check_name: {"passed": bool, "weight": int, "detail": str}}
+
+    When the rulebook is a pure indicator/divergence criteria set (MACD/RSI divergence, etc.),
+    scoring uses the same AND-of-criteria logic as backtests — not the generic consolidation
+    rubric — so divergence patterns can reach production scans.
     """
+    if is_criteria_only_scan(rulebook):
+        try:
+            idf = compute_indicators(df)
+        except Exception as exc:
+            return 0.0, {
+                "criteria_scan": {
+                    "passed": False,
+                    "weight": 100,
+                    "detail": f"Indicator compute failed: {exc!s}"[:200],
+                }
+            }
+        i = len(idf) - 1
+        criteria, direction = extract_criteria_and_direction(
+            rulebook, implicit_macd_default=False
+        )
+        dparams = rulebook.get("divergence") or {}
+        need = int(dparams.get("lookback_bars", 65)) + 5
+        if i < need:
+            return 5.0, {
+                "criteria_scan": {
+                    "passed": False,
+                    "weight": 100,
+                    "detail": f"Need at least ~{need} bars; have {i + 1}",
+                }
+            }
+        ok = run_criteria_at_index(idf, i, criteria, rulebook)
+        detail = (
+            f"{'PASS' if ok else 'NO MATCH'}: {criteria} ({direction}) on latest bar — "
+            "aligned swing divergence vs MACD/RSI (see criteria_checks)."
+        )
+        if ok:
+            return 88.0, {"criteria_scan": {"passed": True, "weight": 100, "detail": detail}}
+        return 18.0, {"criteria_scan": {"passed": False, "weight": 100, "detail": detail}}
+
     conditions = rulebook.get("conditions", {})
     weights = rulebook.get("confidence_weights", {
         "trend_alignment":    20,
