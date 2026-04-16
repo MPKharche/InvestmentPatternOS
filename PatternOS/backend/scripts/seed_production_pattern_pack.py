@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Ensure core Nifty 50 divergence patterns exist and are active (live scans)."""
+"""Ensure core Nifty 50 divergence patterns exist and are active (live scans).
+
+Same logic as FastAPI startup (`canonical_pattern_seed`). Run manually if you
+start workers without the API process.
+"""
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -10,49 +13,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.db.session import SessionLocal  # noqa: E402
-from app.db.models import Pattern, PatternVersion  # noqa: E402
-
-PACK = [
-    ("Nifty50 Bearish MACD Divergence v1", "nifty50_bearish_macd_divergence_v1.rulebook.json"),
-    ("Nifty50 Bullish MACD Divergence v1", "nifty50_bullish_macd_divergence_v1.rulebook.json"),
-    ("Nifty50 Bearish RSI Divergence v1", "nifty50_bearish_rsi_divergence_v1.rulebook.json"),
-]
-
-
-def upsert(db, name: str, rulebook: dict) -> str:
-    p = db.query(Pattern).filter_by(name=name).first()
-    if p:
-        p.status = "active"
-        p.description = (rulebook.get("description") or p.description or "")[:500]
-        db.add(p)
-        db.commit()
-        return f"[reactivate] {name} id={p.id}"
-    pat = Pattern(
-        name=name,
-        description=(rulebook.get("description") or "")[:500],
-        status="active",
-        timeframes=rulebook.get("timeframes") or ["1d"],
-    )
-    db.add(pat)
-    db.flush()
-    pv = PatternVersion(
-        pattern_id=pat.id,
-        version=1,
-        rulebook_json=rulebook,
-        change_summary=f"Seed production pack: {name}",
-    )
-    db.add(pv)
-    db.commit()
-    return f"[created] {name} id={pat.id}"
+from app.db.canonical_pattern_seed import ensure_canonical_divergence_patterns  # noqa: E402
 
 
 def main() -> None:
     db = SessionLocal()
     try:
-        for name, fname in PACK:
-            path = ROOT / "seed_data" / fname
-            rb = json.loads(path.read_text())
-            print(upsert(db, name, rb))
+        for line in ensure_canonical_divergence_patterns(db):
+            print(line)
     finally:
         db.close()
 

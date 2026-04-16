@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Insert the canonical Nifty50 bearish MACD divergence pattern if missing."""
+"""Insert the canonical Nifty50 bearish MACD divergence pattern if missing.
+
+The full production pack (bearish + bullish MACD and bearish RSI) is applied
+automatically when the API starts (`app.db.canonical_pattern_seed`). Use this
+script for a bearish-only insert or when the HTTP app is not running.
+"""
 from __future__ import annotations
 
 import json

@@ -6,6 +6,7 @@ from app.config import get_settings
 from app.api.routes import universe, patterns, signals, outcomes, analytics, scanner, studio
 from app.scheduler.jobs import start_scheduler, stop_scheduler
 from app.db.session import SessionLocal
+from app.db.canonical_pattern_seed import ensure_canonical_divergence_patterns
 from app.cache.signal_cache import purge_expired_cache
 
 settings = get_settings()
@@ -13,16 +14,22 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: clean up expired cache entries
+    # Startup: cache cleanup + canonical MACD/RSI divergence patterns (idempotent)
     db = SessionLocal()
     try:
-        expired_count = purge_expired_cache(db)
-        if expired_count > 0:
-            print(f"[Cache] Purged {expired_count} expired screening results on startup")
-        else:
-            print("[Cache] No expired entries to purge on startup")
-    except Exception as e:
-        print(f"[Cache] Startup cleanup error: {e}")
+        try:
+            expired_count = purge_expired_cache(db)
+            if expired_count > 0:
+                print(f"[Cache] Purged {expired_count} expired screening results on startup")
+            else:
+                print("[Cache] No expired entries to purge on startup")
+        except Exception as e:
+            print(f"[Cache] Startup cleanup error: {e}")
+        try:
+            for line in ensure_canonical_divergence_patterns(db):
+                print(f"[Seed] {line}")
+        except Exception as e:
+            print(f"[Seed] Canonical divergence patterns (MACD/RSI): {e}")
     finally:
         db.close()
 
