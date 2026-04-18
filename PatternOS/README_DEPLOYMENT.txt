@@ -244,3 +244,13 @@ Deployment Date: 2026-04-04
 Next Review: Optional (when monitoring shows changes needed)
 
 ================================================================================
+
+FRESH INSTALL / NEW DEVICE:
+1. git clone <repo>
+2. Install PostgreSQL (localhost:5432, user=postgres)
+3. .\dev-up.bat  → auto-creates .env, runs migrations/seeding (universe Nifty500, patterns, MF historical from GitHub)
+4. Edit .env (API keys), rerun .\dev-up.bat
+5. App ready: http://localhost:3000
+
+All seed data (universe, patterns, MF NAV history) auto-fetched/loaded from GitHub or committed SQL/JSON.
+Subsequent dev-up refreshes only (no re-seed).

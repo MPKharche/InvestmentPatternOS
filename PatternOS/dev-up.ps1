@@ -120,3 +120,45 @@ Write-Host "[dev-up] Ready:"
 Write-Host "  UI:  http://localhost:$FrontendPort"
 Write-Host "  API: http://localhost:$BackendPort/docs"
 Write-Host "  Logs: $runlogsDir"
+
+Write-Host "[dev-up] Ensuring database setup and initial seeding..."
+
+$envPath = Join-Path $root ".env"
+$dbFlag = Join-Path $backendDir ".db_initialized"
+
+if (-not (Test-Path $envPath)) {
+  Write-Host "[dev-up] Creating .env from .env.example..."
+  Copy-Item ".env.example" $envPath -Force
+  Write-Host "[dev-up] Edit .env (POSTGRES_PASSWORD etc.) then rerun. Postgres must be running."
+  exit 1
+}
+
+if (-not (Test-Path $dbFlag)) {
+  Write-Host "[dev-up] Running migrations + production seeding (universe, patterns)..."
+  Push-Location $backendDir
+  $python = Join-Path $root ".venv\Scripts\python.exe"
+  & $python migrate.py
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "[dev-up] Migration failed. Check: Postgres running? .env creds correct?"
+    Pop-Location
+    exit 1
+  }
+  New-Item -ItemType File -Path ".db_initialized" -Force | Out-Null
+  Pop-Location
+  Write-Host "[dev-up] Database ready (Nifty500 + production patterns seeded)."
+}
+
+$mfFlag = Join-Path $backendDir "scripts\.mf_historical_seeded"
+if (-not (Test-Path $mfFlag)) {
+  Write-Host "[dev-up] Bootstrapping MF historical data (fetches from GitHub)..."
+  Push-Location $backendDir
+  $python = Join-Path $root ".venv\Scripts\python.exe"
+  & $python scripts/mf_seed_historical.py
+  if ($LASTEXITCODE -eq 0) {
+    New-Item -ItemType File -Path "scripts\.mf_historical_seeded" -Force | Out-Null
+    Write-Host "[dev-up] MF historical NAV + schemes seeded."
+  } else {
+    Write-Host "[dev-up] MF seed skipped (non-fatal)."
+  }
+  Pop-Location
+}
