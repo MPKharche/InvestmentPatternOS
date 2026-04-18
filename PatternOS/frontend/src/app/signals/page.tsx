@@ -246,6 +246,7 @@ export default function SignalsPage() {
   const [tab, setTab] = useState<typeof TABS[number]>("pending");
   const [patternId, setPatternId] = useState<string>("all");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     patternsApi.list().then(setPatterns).catch(() => {});
@@ -253,16 +254,21 @@ export default function SignalsPage() {
 
   const load = async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const pid = patternId === "all" ? undefined : patternId;
       const data = await signalsApi.list(tab, pid, 100);
       setSignals(data);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to load signals";
+      setLoadError(msg);
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => { load(); }, [tab, patternId]);
+  useEffect(() => { void load(); }, [tab, patternId]);
 
   const sorted = useMemo(
     () => [...signals].sort((a, b) => new Date(b.triggered_at).getTime() - new Date(a.triggered_at).getTime()),
@@ -308,6 +314,17 @@ export default function SignalsPage() {
           </SelectContent>
         </Select>
       </div>
+
+      {loadError ? (
+        <Card className="border-destructive/40 bg-destructive/5">
+          <CardHeader className="py-3">
+            <CardTitle className="text-sm">Unable to load signals</CardTitle>
+          </CardHeader>
+          <CardContent className="text-xs text-muted-foreground">
+            {loadError}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {loading ? (
         <div className="text-muted-foreground text-sm">Loading signals...</div>

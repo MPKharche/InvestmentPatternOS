@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime
+import asyncio
+from datetime import datetime, timedelta
 from statistics import mean
 from typing import Any
+import random
 import httpx
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db.models import Pattern, PatternEvent, Signal, SignalAlertJournal, Universe
+from app.charts.render import render_equity_chart_png
+from app.db.models import Pattern, PatternEvent, Signal, SignalAlertJournal, SignalContext, Universe
 from app.scanner.data import fetch_ohlcv
 
 settings = get_settings()
@@ -86,13 +89,52 @@ def build_alert_payload(
 
 
 async def send_telegram_alert(db: Session, signal: Signal, pattern: Pattern, payload: dict[str, Any]) -> SignalAlertJournal:
-    journal = SignalAlertJournal(signal_id=signal.id, channel="telegram", payload_json=payload, status="queued")
+    """
+    Backwards-compatible entrypoint: enqueue + attempt immediate delivery.
+
+    New architecture uses the outbox worker (scheduler job) to deliver queued alerts
+    with retries, so alerts aren't missed if Telegram/network is flaky.
+    """
+    journal = enqueue_telegram_alert(db, signal, payload)
+    # Best-effort immediate delivery in dev; outbox will retry if it fails.
+    await deliver_telegram_journal(db, journal)
+    return journal
+
+
+def enqueue_telegram_alert(db: Session, signal: Signal, payload: dict[str, Any]) -> SignalAlertJournal:
+    journal = SignalAlertJournal(
+        signal_id=signal.id,
+        channel="telegram",
+        payload_json=payload,
+        status="queued",
+        attempt_count=0,
+        next_attempt_at=datetime.utcnow(),
+    )
     db.add(journal)
     db.flush()
+    return journal
+
+
+def _backoff_seconds(attempt: int) -> int:
+    # Exponential backoff with jitter: 5s -> 10s -> 20s -> 60s -> 5m -> 30m (capped)
+    schedule = [5, 10, 20, 60, 300, 1800]
+    base = schedule[min(attempt, len(schedule) - 1)]
+    jitter = random.randint(0, max(1, int(base * 0.25)))
+    return base + jitter
+
+
+async def deliver_telegram_journal(db: Session, journal: SignalAlertJournal) -> SignalAlertJournal:
+    payload = journal.payload_json or {}
+
+    if not settings.TELEGRAM_ALERTS_ENABLED:
+        journal.status = "failed"
+        journal.last_error = "TELEGRAM_ALERTS_ENABLED=false"
+        return journal
 
     if not settings.TELEGRAM_BOT_TOKEN or not settings.TELEGRAM_CHAT_ID:
         journal.status = "failed"
-        payload["delivery_error"] = "Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID"
+        journal.last_error = "Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID"
+        payload["delivery_error"] = journal.last_error
         journal.payload_json = payload
         return journal
 
@@ -126,31 +168,127 @@ async def send_telegram_alert(db: Session, signal: Signal, pattern: Pattern, pay
         ]]
     }
 
-    url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                url,
-                json={
-                    "chat_id": settings.TELEGRAM_CHAT_ID,
-                    "text": message,
-                    "reply_markup": keyboard,
-                },
-            )
+        journal.attempt_count = int(journal.attempt_count or 0) + 1
+        journal.last_attempt_at = datetime.utcnow()
+        # Prefer sending a chart image with caption (more useful than plain text).
+        signal = db.query(Signal).filter_by(id=journal.signal_id).first()
+        png = None
+        if signal:
+            try:
+                png = await asyncio.to_thread(render_equity_chart_png, signal.symbol, signal.timeframe or "1d", indicators="ema,rsi,macd")
+            except Exception:
+                png = None
+
+        async with httpx.AsyncClient(timeout=20) as client:
+            if png:
+                import json as _json
+                url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendPhoto"
+                caption = message[:900]
+                resp = await client.post(
+                    url,
+                    data={
+                        "chat_id": settings.TELEGRAM_CHAT_ID,
+                        "caption": caption,
+                        "reply_markup": _json.dumps(keyboard),
+                    },
+                    files={"photo": ("chart.png", png, "image/png")},
+                )
+            else:
+                url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage"
+                resp = await client.post(
+                    url,
+                    json={
+                        "chat_id": settings.TELEGRAM_CHAT_ID,
+                        "text": message[:3500],
+                        "reply_markup": keyboard,
+                    },
+                )
+        journal.last_http_status = int(resp.status_code)
         data = resp.json()
         if not data.get("ok"):
-            journal.status = "failed"
-            payload["delivery_error"] = str(data)
-            journal.payload_json = payload
-            return journal
+            raise RuntimeError(str(data))
         msg = data.get("result", {})
         journal.status = "sent"
         journal.telegram_chat_id = str(msg.get("chat", {}).get("id"))
         journal.telegram_message_id = str(msg.get("message_id"))
         journal.delivered_at = datetime.utcnow()
+        journal.next_attempt_at = None
+        journal.last_error = None
     except Exception as exc:
-        journal.status = "failed"
-        payload["delivery_error"] = str(exc)
+        journal.status = "queued"
+        journal.last_error = str(exc)[:500]
+        payload["delivery_error"] = journal.last_error
         journal.payload_json = payload
+        # Schedule retry unless we've exhausted attempts.
+        max_attempts = int(settings.TELEGRAM_ALERT_MAX_ATTEMPTS or 10)
+        if int(journal.attempt_count or 0) >= max_attempts:
+            journal.status = "failed"
+            journal.next_attempt_at = None
+        else:
+            journal.next_attempt_at = datetime.utcnow() + timedelta(seconds=_backoff_seconds(int(journal.attempt_count or 0)))
 
     return journal
+
+
+async def deliver_queued_telegram_alerts(db: Session, *, limit: int = 25) -> int:
+    """
+    Deliver queued Telegram alerts (outbox worker).
+    Returns number of successful sends this run.
+    """
+    now = datetime.utcnow()
+    rows = (
+        db.query(SignalAlertJournal)
+        .filter(SignalAlertJournal.channel == "telegram")
+        .filter(SignalAlertJournal.status == "queued")
+        .filter((SignalAlertJournal.next_attempt_at.is_(None)) | (SignalAlertJournal.next_attempt_at <= now))
+        .order_by(SignalAlertJournal.created_at.asc())
+        .limit(limit)
+        .all()
+    )
+    sent = 0
+    for j in rows:
+        await deliver_telegram_journal(db, j)
+        if j.status == "sent":
+            sent += 1
+    db.commit()
+    return sent
+
+
+def reconcile_today_telegram_outbox(db: Session) -> int:
+    """
+    Safety net: ensure any signal created today has an outbox row.
+    This prevents missed alerts if the scanner process crashed between writing the Signal and enqueuing.
+    """
+    if not settings.TELEGRAM_ALERTS_ENABLED:
+        return 0
+
+    today = datetime.utcnow().date()
+    start = datetime(today.year, today.month, today.day)
+    end = start + timedelta(days=1)
+
+    signals = (
+        db.query(Signal)
+        .filter(Signal.triggered_at >= start, Signal.triggered_at < end)
+        .order_by(Signal.triggered_at.asc())
+        .all()
+    )
+
+    added = 0
+    for s in signals:
+        exists = db.query(SignalAlertJournal).filter_by(signal_id=s.id, channel="telegram").first()
+        if exists:
+            continue
+        pat = db.query(Pattern).filter_by(id=s.pattern_id).first()
+        if not pat:
+            continue
+        ctx = db.query(SignalContext).filter_by(signal_id=s.id).first()
+        key_levels = (ctx.key_levels if ctx else None) or None
+        analysis = (ctx.llm_analysis if ctx else None) or ""
+        equity_note = (ctx.equity_research_note if ctx else None) or None
+        payload = build_alert_payload(db, s, pat, key_levels, analysis, equity_research=equity_note)
+        enqueue_telegram_alert(db, s, payload)
+        added += 1
+
+    db.commit()
+    return added

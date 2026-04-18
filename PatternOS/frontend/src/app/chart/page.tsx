@@ -21,6 +21,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { ConfidenceBadge } from "@/components/confidence-badge";
+import { toast } from "sonner";
 import {
   ArrowUpToLine, ChevronRight, Minus, Move, RefreshCw, TrendingUp, ZoomIn,
 } from "lucide-react";
@@ -382,10 +383,15 @@ export default function ChartPage() {
 
   // ── Load universe ───────────────────────────────────────────────────────────
   useEffect(() => {
-    universeApi.list(true).then((items) => {
-      setSymbols(items);
-      if (items.length > 0) setSymbol(items[0].symbol);
-    });
+    void universeApi.list(true)
+      .then((items) => {
+        setSymbols(items);
+        if (items.length > 0) setSymbol(items[0].symbol);
+      })
+      .catch((e) => {
+        const msg = e instanceof Error ? e.message : "Failed to load universe";
+        toast.error(msg);
+      });
   }, []);
 
   // ── Close dropdown on outside click ─────────────────────────────────────────
@@ -589,13 +595,16 @@ export default function ChartPage() {
         ? [...markerList, ...cdlMarkerList].sort((a, b) => String(a.time) < String(b.time) ? -1 : 1)
         : markerList;
       markersRef.current.setMarkers(allMarkers);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to load chart data";
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
   }, [applyIndicatorOverlays, showRsi, showMacd, showStoch, showAdx, activeInds]);
 
   useEffect(() => {
-    if (symbol) loadChart(symbol, timeframe);
+    if (symbol) void loadChart(symbol, timeframe);
   }, [symbol, timeframe, loadChart]);
 
   // ── Indicator toggle ────────────────────────────────────────────────────────

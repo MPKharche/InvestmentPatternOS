@@ -1,0 +1,17 @@
+#
+# Optional quant engines for PatternOS.
+#
+# The app remains functional without these. Install only if you want:
+# - TA-Lib powered indicators + candlestick patterns
+# - vectorbt backtests + richer strategy stats
+#
+# Windows notes:
+# - TA-Lib may require prebuilt wheels or installing the TA-Lib C library.
+# - vectorbt pulls numba/llvmlite; pinning may be required for some Python versions.
+#
+# Keep numpy <2 until pandas/scipy stacks in this repo are upgraded.
+numpy<2
+
+# TA-Lib wheels exist for cp311 on Windows; 0.6.x is the current maintained line.
+TA-Lib==0.6.8
+vectorbt==0.26.1

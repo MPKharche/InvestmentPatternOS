@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: patternos
+      POSTGRES_PASSWORD: patternos
+      POSTGRES_DB: patternos_stdtest
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U patternos -d patternos_stdtest"]
+      interval: 2s
+      timeout: 2s
+      retries: 30

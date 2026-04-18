@@ -179,7 +179,7 @@ async def chat_text(body: ChatRequest, db: Session = Depends(get_db)):
 
 @router.post("/chat-with-files", response_model=ChatResponse)
 async def chat_with_files(
-    message: Annotated[str, Form()] = "",
+    message: Annotated[str, Form(...)],
     pattern_id: Annotated[str | None, Form()] = None,
     files: list[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
@@ -249,12 +249,14 @@ def get_history(pattern_id: str, db: Session = Depends(get_db)):
 @router.post("/{pattern_id}/backtest")
 async def start_backtest(
     pattern_id: str,
+    engine: str = Query("internal"),
     body: dict = Body(default={}),
     db: Session = Depends(get_db)
 ):
     """Start a backtest run in a thread pool so the event loop stays responsive."""
     import asyncio
     from app.scanner.backtest import run_backtest
+    from app.scanner.vectorbt_backtest import run_backtest_vectorbt
     from app.db.session import SessionLocal
 
     p = db.query(Pattern).filter_by(id=pattern_id).first()
@@ -275,10 +277,16 @@ async def start_backtest(
         elif isinstance(symbols, list):
             symbol_list = [s.strip() for s in symbols if s]
 
+    engine_norm = (engine or "internal").strip().lower()
+    if engine_norm not in ("internal", "vectorbt"):
+        raise HTTPException(400, "Invalid engine; use internal|vectorbt")
+
     def _run_in_thread():
         # Each thread needs its own Session — SQLAlchemy sessions are not thread-safe
         thread_db = SessionLocal()
         try:
+            if engine_norm == "vectorbt":
+                return run_backtest_vectorbt(pattern_id, thread_db, scope=scope, symbols=symbol_list)
             return run_backtest(pattern_id, thread_db, scope=scope, symbols=symbol_list)
         finally:
             thread_db.close()
@@ -301,11 +309,12 @@ def list_backtest_runs(pattern_id: str, db: Session = Depends(get_db)):
     )
     return [
         {
-            "id": r.id, "version_num": r.version_num, "status": r.status,
+            "id": r.id, "version_num": r.version_num, "status": r.status, "engine": getattr(r, "engine", "internal"),
             "symbols_scanned": r.symbols_scanned, "events_found": r.events_found,
             "success_count": r.success_count, "failure_count": r.failure_count,
             "neutral_count": r.neutral_count, "success_rate": r.success_rate,
             "avg_ret_5d": r.avg_ret_5d, "avg_ret_10d": r.avg_ret_10d, "avg_ret_20d": r.avg_ret_20d,
+            "stats_json": getattr(r, "stats_json", None),
             "started_at": r.started_at.isoformat() if r.started_at else None,
             "completed_at": r.completed_at.isoformat() if r.completed_at else None,
         }

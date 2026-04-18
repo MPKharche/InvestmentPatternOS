@@ -483,6 +483,7 @@ function BacktestTab({
   const [running, setRunning] = useState(false);
   const [scanScope, setScanScope] = useState<"full" | "nifty50" | "custom">("nifty50");
   const [customSymbols, setCustomSymbols] = useState("");
+  const [engine, setEngine] = useState<"internal" | "vectorbt">("internal");
   const [symbolBreakdown, setSymbolBreakdown] = useState<
     { symbol: string; count: number; success: number; failure: number }[]
   >([]);
@@ -522,7 +523,7 @@ function BacktestTab({
         params.symbols = customSymbols.split(",").map(s => s.trim()).join(",");
       }
       // Pass parameters to backtest (backend will use defaults if not provided)
-      await studioApi.runBacktest(patternId, params);
+      await studioApi.runBacktest(patternId, { ...(params as any), engine });
       toast.success("Backtest complete!");
       loadRuns();
     } catch (e) {
@@ -564,6 +565,18 @@ function BacktestTab({
                 className="text-xs h-20 resize-none"
               />
             )}
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-muted-foreground">Engine</label>
+            <Select value={engine} onValueChange={(v) => setEngine(v as any)}>
+              <SelectTrigger className="text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="internal">Internal (fast)</SelectItem>
+                <SelectItem value="vectorbt">vectorbt (richer stats)</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <p className="text-xs text-muted-foreground">
             {scanScope === "nifty50"
@@ -679,6 +692,49 @@ function BacktestTab({
               </div>
             </CardContent>
           </Card>
+
+          {/* vectorbt stats */}
+          {latestRun.engine === "vectorbt" && latestRun.stats_json && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">vectorbt Summary</CardTitle>
+              </CardHeader>
+              <CardContent className="text-xs text-muted-foreground space-y-1">
+                {(() => {
+                  const agg = (latestRun.stats_json as any)?.aggregate;
+                  if (!agg) return <div>Stats not available.</div>;
+                  return (
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <div>
+                        <div className="text-muted-foreground">Avg Total Return</div>
+                        <div className="text-foreground font-medium">
+                          {agg.avg_total_return_pct != null ? `${Number(agg.avg_total_return_pct).toFixed(2)}%` : "—"}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-muted-foreground">Avg Sharpe</div>
+                        <div className="text-foreground font-medium">
+                          {agg.avg_sharpe != null ? Number(agg.avg_sharpe).toFixed(2) : "—"}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-muted-foreground">Avg Max DD</div>
+                        <div className="text-foreground font-medium">
+                          {agg.avg_max_drawdown_pct != null ? `${Number(agg.avg_max_drawdown_pct).toFixed(2)}%` : "—"}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-muted-foreground">Avg Win Rate</div>
+                        <div className="text-foreground font-medium">
+                          {agg.avg_win_rate_pct != null ? `${Number(agg.avg_win_rate_pct).toFixed(1)}%` : "—"}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </CardContent>
+            </Card>
+          )}
 
           {/* Bar chart: Success / Failure / Neutral */}
           <Card>

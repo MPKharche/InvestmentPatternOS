@@ -60,3 +60,16 @@ for mf in migration_files:
 cur.close()
 conn.close()
 print("\nMigrations complete.")
+
+# Optional: ensure the canonical divergence patterns exist in the DB.
+# This keeps a fresh local DB usable immediately after running migrations.
+seed_flag = os.environ.get("SEED_PRODUCTION_PATTERN_PACK", "1").strip().lower()
+if seed_flag not in ("0", "false", "no", "off"):
+    try:
+        # Import late so migrate.py still works even if SQLAlchemy deps change.
+        from app.db.seed_production_pack import seed_production_pattern_pack  # type: ignore
+
+        for line in seed_production_pattern_pack():
+            print(line)
+    except Exception as e:
+        print(f"[seed] ERROR: {e}")

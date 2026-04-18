@@ -12,7 +12,7 @@ from app.scanner.evaluator import evaluate_pattern
 from app.llm.screener import llm_screen
 from app.cache.signal_cache import get_cached_screening, store_screening_result
 from app.config import get_settings
-from app.alerts.telegram import build_alert_payload, send_telegram_alert
+from app.alerts.telegram import build_alert_payload, enqueue_telegram_alert
 from app.scanner.backtest_metrics import forward_returns_for_live_bar
 
 settings = get_settings()
@@ -152,7 +152,8 @@ async def scan_symbol(
 
     # Persist alert journal and push Telegram alert payload.
     payload = build_alert_payload(db, signal, pattern, key_levels, analysis, equity_research=equity_note)
-    await send_telegram_alert(db, signal, pattern, payload)
+    if settings.TELEGRAM_ALERTS_ENABLED:
+        enqueue_telegram_alert(db, signal, payload)
     return signal
 
 

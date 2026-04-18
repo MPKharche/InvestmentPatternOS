@@ -9,6 +9,8 @@ import math
 import pandas as pd
 from typing import Any
 
+from app.config import get_settings
+
 from ta.trend import (
     EMAIndicator,
     SMAIndicator,
@@ -19,10 +21,25 @@ from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.volatility import BollingerBands, AverageTrueRange
 from ta.volume import OnBalanceVolumeIndicator
 
+settings = get_settings()
+
+
+def _resolve_engine(engine: str | None) -> str:
+    e = (engine or settings.INDICATOR_ENGINE or "auto").strip().lower()
+    if e not in ("auto", "ta", "talib"):
+        return "auto"
+    if e == "auto":
+        try:
+            import talib  # noqa: F401
+            return "talib"
+        except Exception:
+            return "ta"
+    return e
+
 
 # ── Core computation ──────────────────────────────────────────────────────────
 
-def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
+def _compute_indicators_ta(df: pd.DataFrame) -> pd.DataFrame:
     """
     Appends indicator columns to a copy of *df*.
     Expects columns: Open, High, Low, Close, Volume (title-case).
@@ -47,35 +64,128 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["bb_width"] = bb.bollinger_wband()   # (upper-lower)/mid * 100
 
     # RSI-14
-    df["rsi"] = RSIIndicator(close, window=14, fillna=False).rsi()
+    try:
+        df["rsi"] = RSIIndicator(close, window=14, fillna=False).rsi()
+    except Exception:
+        df["rsi"] = pd.NA
 
     # MACD (12, 26, 9)
-    macd_obj = MACDIndicator(close, window_fast=12, window_slow=26, window_sign=9, fillna=False)
-    df["macd"]        = macd_obj.macd()
-    df["macd_signal"] = macd_obj.macd_signal()
-    df["macd_hist"]   = macd_obj.macd_diff()
+    try:
+        macd_obj = MACDIndicator(close, window_fast=12, window_slow=26, window_sign=9, fillna=False)
+        df["macd"]        = macd_obj.macd()
+        df["macd_signal"] = macd_obj.macd_signal()
+        df["macd_hist"]   = macd_obj.macd_diff()
+    except Exception:
+        df["macd"] = pd.NA
+        df["macd_signal"] = pd.NA
+        df["macd_hist"] = pd.NA
 
     # ATR-14
-    df["atr"] = AverageTrueRange(high, low, close, window=14, fillna=False).average_true_range()
+    try:
+        df["atr"] = AverageTrueRange(high, low, close, window=14, fillna=False).average_true_range()
+    except Exception:
+        df["atr"] = pd.NA
 
     # Stochastic (14, 3)
-    stoch = StochasticOscillator(high, low, close, window=14, smooth_window=3, fillna=False)
-    df["stoch_k"] = stoch.stoch()
-    df["stoch_d"] = stoch.stoch_signal()
+    try:
+        stoch = StochasticOscillator(high, low, close, window=14, smooth_window=3, fillna=False)
+        df["stoch_k"] = stoch.stoch()
+        df["stoch_d"] = stoch.stoch_signal()
+    except Exception:
+        df["stoch_k"] = pd.NA
+        df["stoch_d"] = pd.NA
 
     # ADX-14
-    adx = ADXIndicator(high, low, close, window=14, fillna=False)
-    df["adx"]    = adx.adx()
-    df["adx_di_pos"] = adx.adx_pos()
-    df["adx_di_neg"] = adx.adx_neg()
+    try:
+        adx = ADXIndicator(high, low, close, window=14, fillna=False)
+        df["adx"]    = adx.adx()
+        df["adx_di_pos"] = adx.adx_pos()
+        df["adx_di_neg"] = adx.adx_neg()
+    except Exception:
+        df["adx"] = pd.NA
+        df["adx_di_pos"] = pd.NA
+        df["adx_di_neg"] = pd.NA
 
     # OBV
-    df["obv"] = OnBalanceVolumeIndicator(close, vol, fillna=False).on_balance_volume()
+    try:
+        df["obv"] = OnBalanceVolumeIndicator(close, vol, fillna=False).on_balance_volume()
+    except Exception:
+        df["obv"] = pd.NA
 
     return df
 
 
 # ── Serialise for API ─────────────────────────────────────────────────────────
+
+def _compute_indicators_talib(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    TA-Lib powered indicator computation.
+    Falls back to `ta` if TA-Lib isn't available.
+    """
+    try:
+        import numpy as np
+        import talib
+    except Exception:
+        return _compute_indicators_ta(df)
+
+    df = df.copy()
+    close = df["Close"].astype(float).to_numpy()
+    high = df["High"].astype(float).to_numpy()
+    low = df["Low"].astype(float).to_numpy()
+    vol = df["Volume"].astype(float).to_numpy() if "Volume" in df.columns else np.zeros_like(close)
+
+    df["ema_20"] = talib.EMA(close, timeperiod=20)
+    df["ema_50"] = talib.EMA(close, timeperiod=50)
+    df["ema_200"] = talib.EMA(close, timeperiod=200)
+    df["sma_20"] = talib.SMA(close, timeperiod=20)
+
+    upper, mid, lower = talib.BBANDS(close, timeperiod=20, nbdevup=2, nbdevdn=2, matype=0)
+    df["bb_upper"] = upper
+    df["bb_mid"] = mid
+    df["bb_lower"] = lower
+    df["bb_width"] = (upper - lower) / mid * 100.0
+
+    df["rsi"] = talib.RSI(close, timeperiod=14)
+
+    macd, macdsignal, macdhist = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
+    df["macd"] = macd
+    df["macd_signal"] = macdsignal
+    df["macd_hist"] = macdhist
+
+    df["atr"] = talib.ATR(high, low, close, timeperiod=14)
+
+    slowk, slowd = talib.STOCH(
+        high,
+        low,
+        close,
+        fastk_period=14,
+        slowk_period=3,
+        slowk_matype=0,
+        slowd_period=3,
+        slowd_matype=0,
+    )
+    df["stoch_k"] = slowk
+    df["stoch_d"] = slowd
+
+    df["adx"] = talib.ADX(high, low, close, timeperiod=14)
+    df["adx_di_pos"] = talib.PLUS_DI(high, low, close, timeperiod=14)
+    df["adx_di_neg"] = talib.MINUS_DI(high, low, close, timeperiod=14)
+
+    df["obv"] = talib.OBV(close, vol)
+
+    return df
+
+
+def compute_indicators(df: pd.DataFrame, *, engine: str | None = None) -> pd.DataFrame:
+    """
+    Appends indicator columns to a copy of *df*.
+    Expects columns: Open, High, Low, Close, Volume (title-case).
+    """
+    resolved = _resolve_engine(engine)
+    if resolved == "talib":
+        return _compute_indicators_talib(df)
+    return _compute_indicators_ta(df)
+
 
 def _v(x: Any) -> float | None:
     """Return a JSON-safe float or None."""

@@ -16,5 +16,15 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        # Best-effort rollback; never let cleanup errors mask the real exception.
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise
     finally:
-        db.close()
+        try:
+            db.close()
+        except Exception:
+            pass

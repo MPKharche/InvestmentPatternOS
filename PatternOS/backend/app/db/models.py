@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Optional
 from sqlalchemy import (
     Column, String, Boolean, Integer, Float, Text,
-    DateTime, ForeignKey, ARRAY, JSON, UniqueConstraint, Index
+    DateTime, Date, ForeignKey, ARRAY, JSON, UniqueConstraint, Index
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
@@ -178,6 +178,7 @@ class BacktestRun(Base):
     id              = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     pattern_id      = Column(UUID(as_uuid=False), ForeignKey("patterns.id", ondelete="CASCADE"), nullable=False)
     version_num     = Column(Integer, default=1)
+    engine          = Column(String(20), default="internal")  # internal|vectorbt
     symbols_scanned = Column(Integer, default=0)
     events_found    = Column(Integer, default=0)
     success_count   = Column(Integer, default=0)
@@ -187,6 +188,7 @@ class BacktestRun(Base):
     avg_ret_5d      = Column(Float)
     avg_ret_10d     = Column(Float)
     avg_ret_20d     = Column(Float)
+    stats_json      = Column(JSONB)
     status          = Column(String(20), default="running")
     error_message   = Column(Text)
     started_at      = Column(DateTime(timezone=True), default=datetime.utcnow)
@@ -257,6 +259,11 @@ class SignalAlertJournal(Base):
     telegram_chat_id    = Column(String(40))
     telegram_message_id = Column(String(40))
     delivered_at        = Column(DateTime(timezone=True))
+    attempt_count       = Column(Integer, nullable=False, default=0)
+    next_attempt_at     = Column(DateTime(timezone=True))
+    last_attempt_at     = Column(DateTime(timezone=True))
+    last_error          = Column(Text)
+    last_http_status    = Column(Integer)
     created_at          = Column(DateTime(timezone=True), default=datetime.utcnow)
 
 
@@ -293,3 +300,230 @@ class TelegramSyncState(Base):
     id             = Column(Integer, primary_key=True, default=1)
     last_update_id = Column(Integer, nullable=False, default=0)
     updated_at     = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ============================================================================
+# Mutual Funds module
+# ============================================================================
+
+
+class MFScheme(Base):
+    __tablename__ = "mf_schemes"
+    scheme_code   = Column(Integer, primary_key=True)
+    isin_growth   = Column(String(20))
+    isin_reinvest = Column(String(20))
+    scheme_name   = Column(Text)
+
+    family_id     = Column(Integer, index=True)
+    family_name   = Column(Text)
+    amc_name      = Column(Text)
+    amc_slug      = Column(Text)
+    category      = Column(Text)
+    plan_type     = Column(String(20))
+    option_type   = Column(String(30))
+    risk_label    = Column(Text)
+    expense_ratio = Column(Float)
+    aum           = Column(Float)
+    min_sip       = Column(Float)
+    min_lumpsum   = Column(Float)
+    exit_load     = Column(Text)
+    benchmark     = Column(Text)
+    launch_date   = Column(Date)
+    morningstar_sec_id = Column(Text)
+
+    latest_nav      = Column(Float)
+    latest_nav_date = Column(Date)
+    is_active       = Column(Boolean, nullable=False, default=True)
+
+    monitored     = Column(Boolean, nullable=False, default=False, index=True)
+    notes         = Column(Text)
+
+    # External links (best-effort deep links with safe fallbacks)
+    valueresearch_url = Column(Text)
+    morningstar_url   = Column(Text)
+    valueresearch_link_status = Column(String(20))
+    morningstar_link_status   = Column(String(20))
+    links_last_checked_at = Column(DateTime(timezone=True))
+    links_last_check_status = Column(Integer)
+
+    # Enrichment caching
+    mfdata_fetched_at = Column(DateTime(timezone=True))
+    returns_json = Column(JSONB)
+    ratios_json  = Column(JSONB)
+
+    created_at    = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at    = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MFProviderState(Base):
+    __tablename__ = "mf_provider_state"
+    provider = Column(String(40), primary_key=True)
+    paused_until = Column(DateTime(timezone=True))
+    consecutive_failures = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MFIngestionCursor(Base):
+    __tablename__ = "mf_ingestion_cursors"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    provider = Column(String(40), nullable=False)
+    endpoint_class = Column(String(60), nullable=False)
+    scheme_code = Column(Integer)
+    family_id = Column(Integer)
+    cursor_json = Column(JSONB, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MFIngestionTask(Base):
+    __tablename__ = "mf_ingestion_tasks"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    run_id = Column(UUID(as_uuid=False), ForeignKey("mf_ingestion_runs.id", ondelete="CASCADE"))
+    provider = Column(String(40), nullable=False)
+    endpoint_class = Column(String(60), nullable=False)
+    scheme_code = Column(Integer)
+    family_id = Column(Integer)
+    started_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    finished_at = Column(DateTime(timezone=True))
+    status = Column(String(20), nullable=False, default="running")
+    request_count = Column(Integer, nullable=False, default=0)
+    retry_count = Column(Integer, nullable=False, default=0)
+    backoff_seconds = Column(Float, nullable=False, default=0.0)
+    http_statuses = Column(JSONB)
+    error_text = Column(Text)
+
+
+class MFNavDaily(Base):
+    __tablename__ = "mf_nav_daily"
+    scheme_code = Column(Integer, ForeignKey("mf_schemes.scheme_code", ondelete="CASCADE"), primary_key=True)
+    nav_date    = Column(Date, primary_key=True)
+    nav         = Column(Float, nullable=False)
+    source      = Column(String(20), nullable=False, default="amfi")
+    ingested_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+    scheme = relationship("MFScheme")
+
+
+class MFNavMetricsDaily(Base):
+    __tablename__ = "mf_nav_metrics_daily"
+    scheme_code = Column(Integer, ForeignKey("mf_schemes.scheme_code", ondelete="CASCADE"), primary_key=True)
+    nav_date    = Column(Date, primary_key=True)
+
+    day_change     = Column(Float)
+    day_change_pct = Column(Float)
+
+    ret_7d   = Column(Float)
+    ret_30d  = Column(Float)
+    ret_90d  = Column(Float)
+    ret_365d = Column(Float)
+
+    rolling_52w_high_nav = Column(Float)
+    is_52w_high          = Column(Boolean, nullable=False, default=False)
+
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    scheme = relationship("MFScheme")
+
+
+class MFFamilyHoldingsSnapshot(Base):
+    __tablename__ = "mf_family_holdings_snapshot"
+    family_id  = Column(Integer, primary_key=True)
+    month      = Column(Date, primary_key=True)  # first day of month
+
+    total_aum  = Column(Float)
+    equity_pct = Column(Float)
+    debt_pct   = Column(Float)
+    other_pct  = Column(Float)
+    fetched_at = Column(DateTime(timezone=True))
+    raw_json   = Column(JSONB)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class MFHolding(Base):
+    __tablename__ = "mf_holdings"
+    family_id     = Column(Integer, primary_key=True)
+    month         = Column(Date, primary_key=True)
+    holding_type  = Column(String(10), primary_key=True)  # equity|debt|other
+    name          = Column(Text, primary_key=True)
+
+    weight_pct       = Column(Float)
+    market_value     = Column(Float)
+    quantity         = Column(Float)
+    month_change_qty = Column(Float)
+    month_change_pct = Column(Float)
+
+    credit_rating = Column(Text)
+    maturity_date = Column(Date)
+
+    isin   = Column(String(20))
+    ticker = Column(Text)
+    sector = Column(Text)
+
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class MFSectorAlloc(Base):
+    __tablename__ = "mf_sector_alloc"
+    family_id   = Column(Integer, primary_key=True)
+    month       = Column(Date, primary_key=True)
+    sector      = Column(Text, primary_key=True)
+    weight_pct  = Column(Float, nullable=False)
+    created_at  = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class MFRulebook(Base):
+    __tablename__ = "mf_rulebooks"
+    id              = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    name            = Column(String(160), nullable=False, unique=True)
+    status          = Column(String(20), nullable=False, default="active")
+    current_version = Column(Integer, nullable=False, default=1)
+    created_at      = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at      = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    versions = relationship("MFRulebookVersion", back_populates="rulebook", cascade="all, delete-orphan")
+
+
+class MFRulebookVersion(Base):
+    __tablename__ = "mf_rulebook_versions"
+    id            = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    rulebook_id   = Column(UUID(as_uuid=False), ForeignKey("mf_rulebooks.id", ondelete="CASCADE"), nullable=False)
+    version       = Column(Integer, nullable=False)
+    rulebook_json = Column(JSONB, nullable=False)
+    change_summary = Column(Text)
+    created_at    = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+    rulebook = relationship("MFRulebook", back_populates="versions")
+    __table_args__ = (UniqueConstraint("rulebook_id", "version"),)
+
+
+class MFSignal(Base):
+    __tablename__ = "mf_signals"
+    id               = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    scheme_code      = Column(Integer, ForeignKey("mf_schemes.scheme_code", ondelete="CASCADE"), nullable=False)
+    family_id        = Column(Integer)
+    signal_type      = Column(String(60), nullable=False)
+    nav_date         = Column(Date)
+    triggered_at     = Column(DateTime(timezone=True), default=datetime.utcnow)
+    base_score       = Column(Float)
+    confidence_score = Column(Float, nullable=False)
+    context_json     = Column(JSONB)
+    llm_analysis     = Column(Text)
+    status           = Column(String(20), nullable=False, default="pending")
+    reviewed_at      = Column(DateTime(timezone=True))
+    review_action    = Column(String(40))
+    review_notes     = Column(Text)
+
+    scheme = relationship("MFScheme")
+    __table_args__ = (UniqueConstraint("scheme_code", "signal_type", "nav_date"),)
+
+
+class MFIngestionRun(Base):
+    __tablename__ = "mf_ingestion_runs"
+    id         = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    run_type   = Column(String(40), nullable=False)
+    started_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    finished_at = Column(DateTime(timezone=True))
+    status     = Column(String(20), nullable=False, default="running")
+    stats_json = Column(JSONB)
+    error_text = Column(Text)

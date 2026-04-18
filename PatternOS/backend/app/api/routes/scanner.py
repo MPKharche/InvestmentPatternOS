@@ -6,6 +6,7 @@ from app.scanner.engine import run_scan
 from app.scanner.data import fetch_ohlcv
 from app.scanner.indicators import compute_indicators, indicators_to_records
 from app.scanner.pattern_detector import detect_chart_patterns, detect_candlestick_patterns
+from app.scanner.talib_candles import detect_talib_candlestick_patterns
 
 router = APIRouter(prefix="/scanner", tags=["scanner"])
 
@@ -79,8 +80,9 @@ def get_chart_patterns(
     """
     df = fetch_ohlcv(symbol, timeframe, extended=True)
     if df is None or df.empty:
-        return {"chart_patterns": [], "candlestick_patterns": []}
+        return {"chart_patterns": [], "candlestick_patterns": [], "talib_candlestick_patterns": []}
     return {
         "chart_patterns":       detect_chart_patterns(df, lookback=lookback),
         "candlestick_patterns": detect_candlestick_patterns(df, lookback=30),
+        "talib_candlestick_patterns": detect_talib_candlestick_patterns(df, lookback=30),
     }

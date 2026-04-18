@@ -3,7 +3,9 @@
  * Base URL is read from NEXT_PUBLIC_API_BASE_URL env var.
  */
 
-const BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
+// Default to same-origin API proxy (see next.config.ts rewrites) so non-technical users
+// don't need to think about ports/CORS in local setup.
+const BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api/v1";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -162,6 +164,7 @@ export interface BacktestRun {
   id: string;
   version_num: number;
   status: string;
+  engine?: "internal" | "vectorbt" | string;
   symbols_scanned: number;
   events_found: number;
   success_count: number;
@@ -171,6 +174,7 @@ export interface BacktestRun {
   avg_ret_5d: number | null;
   avg_ret_10d: number | null;
   avg_ret_20d: number | null;
+  stats_json?: Record<string, unknown> | null;
   started_at: string;
   completed_at: string | null;
 }
@@ -304,11 +308,16 @@ export const studioApi = {
     request<ChatResponse>("/studio/chat", { method: "POST", body: JSON.stringify(body) }),
   history: (patternId: string) =>
     request<ChatMessage[]>(`/studio/${patternId}/history`),
-  runBacktest: (patternId: string, params?: { scope?: string; symbols?: string }) =>
-    request<{ run_id: string; status: string }>(`/studio/${patternId}/backtest`, {
+  runBacktest: (patternId: string, params?: { scope?: string; symbols?: string; engine?: "internal" | "vectorbt" }) => {
+    const engine = params?.engine ?? "internal";
+    const qs = new URLSearchParams({ engine });
+    const body = { ...(params ?? {}) };
+    delete (body as any).engine;
+    return request<{ run_id: string; status: string }>(`/studio/${patternId}/backtest?${qs}`, {
       method: "POST",
-      body: JSON.stringify(params ?? {})
-    }),
+      body: JSON.stringify(body)
+    });
+  },
   getBacktestRuns: (patternId: string) =>
     request<BacktestRun[]>(`/studio/${patternId}/backtest/runs`),
   getEvents: (
@@ -402,4 +411,202 @@ export const scannerApi = {
         }),
       }
     ),
+};
+
+// ───────────────────────── Mutual Funds ─────────────────────────
+
+export interface MFScheme {
+  scheme_code: number;
+  scheme_name: string | null;
+  isin_growth?: string | null;
+  isin_reinvest?: string | null;
+  family_id?: number | null;
+  family_name?: string | null;
+  amc_name?: string | null;
+  amc_slug?: string | null;
+  category?: string | null;
+  plan_type?: string | null;
+  option_type?: string | null;
+  risk_label?: string | null;
+  expense_ratio?: number | null;
+  aum?: number | null;
+  min_sip?: number | null;
+  min_lumpsum?: number | null;
+  exit_load?: string | null;
+  benchmark?: string | null;
+  launch_date?: string | null;
+  latest_nav?: number | null;
+  latest_nav_date?: string | null;
+  is_active?: boolean;
+  monitored?: boolean;
+  notes?: string | null;
+  valueresearch_url?: string | null;
+  morningstar_url?: string | null;
+  valueresearch_link_status?: string | null;
+  morningstar_link_status?: string | null;
+  morningstar_sec_id?: string | null;
+  returns_json?: Record<string, unknown> | null;
+  ratios_json?: Record<string, unknown> | null;
+  updated_at?: string | null;
+}
+
+export interface MFNavPoint {
+  nav_date: string;
+  nav: number;
+}
+
+export interface MFSignal {
+  id: string;
+  scheme_code: number;
+  scheme_name?: string | null;
+  family_id?: number | null;
+  signal_type: string;
+  nav_date?: string | null;
+  triggered_at: string;
+  base_score?: number | null;
+  confidence_score: number;
+  status: string;
+  llm_analysis?: string | null;
+  context_json?: Record<string, unknown> | null;
+  reviewed_at?: string | null;
+  review_action?: string | null;
+  review_notes?: string | null;
+}
+
+export interface MFIndicatorRecord {
+  time: string;
+  ema_20?: number | null;
+  ema_50?: number | null;
+  ema_200?: number | null;
+  sma_20?: number | null;
+  bb_upper?: number | null;
+  bb_mid?: number | null;
+  bb_lower?: number | null;
+  bb_width?: number | null;
+  rsi?: number | null;
+  macd?: number | null;
+  macd_signal?: number | null;
+  macd_hist?: number | null;
+  atr?: number | null;
+  stoch_k?: number | null;
+  stoch_d?: number | null;
+  adx?: number | null;
+  adx_di_pos?: number | null;
+  adx_di_neg?: number | null;
+  obv?: number | null;
+}
+
+export interface MFPatternsResponse {
+  chart_patterns: any[];
+  candlestick_patterns: any[];
+  talib_candlestick_patterns: any[];
+}
+
+export interface MFIngestionStatus {
+  latest_nav_run?: any | null;
+  latest_holdings_run?: any | null;
+  monitored_schemes: number;
+  schemes_total: number;
+  nav_rows_total: number;
+  signals_pending: number;
+  providers?: MFProviderState[] | null;
+}
+
+export interface MFProviderState {
+  provider: string;
+  paused_until?: string | null;
+  consecutive_failures: number;
+  last_error?: string | null;
+  updated_at?: string | null;
+}
+
+export interface MFRulebook {
+  id: string;
+  name: string;
+  status: string;
+  current_version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MFRulebookVersion {
+  id: string;
+  rulebook_id: string;
+  version: number;
+  rulebook_json: Record<string, unknown>;
+  change_summary?: string | null;
+  created_at: string;
+}
+
+export const mfApi = {
+  status: () => request<MFIngestionStatus>("/mf/pipeline/status"),
+  runNav: () => request<{ ok: boolean; stats: any }>("/mf/pipeline/nav/run", { method: "POST", body: JSON.stringify({}) }),
+  runHoldings: () => request<{ ok: boolean; stats: any }>("/mf/pipeline/holdings/run", { method: "POST", body: JSON.stringify({}) }),
+  runHoldingsBootstrap: () => request<{ ok: boolean; stats: any }>("/mf/pipeline/holdings/bootstrap", { method: "POST", body: JSON.stringify({}) }),
+  runBackfill: () => request<{ ok: boolean; stats: any }>("/mf/pipeline/backfill/run", { method: "POST", body: JSON.stringify({}) }),
+  runNavGapfill: () => request<{ ok: boolean; stats: any }>("/mf/pipeline/nav/gapfill", { method: "POST", body: JSON.stringify({}) }),
+  checkLinks: () => request<{ ok: boolean; stats: any }>("/mf/pipeline/links/check", { method: "POST", body: JSON.stringify({}) }),
+  navQuality: (params?: { monitored_only?: boolean; amc_query?: string; gap_days?: number; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.monitored_only != null) qs.set("monitored_only", String(params.monitored_only));
+    if (params?.amc_query) qs.set("amc_query", params.amc_query);
+    if (params?.gap_days != null) qs.set("gap_days", String(params.gap_days));
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<any>(`/mf/nav/quality${suffix}`);
+  },
+  providers: () => request<MFProviderState[]>("/mf/providers"),
+  pauseProvider: (provider: string, body: { minutes?: number; reason?: string }) =>
+    request<MFProviderState>(`/mf/providers/${encodeURIComponent(provider)}/pause`, { method: "POST", body: JSON.stringify(body) }),
+  resumeProvider: (provider: string) =>
+    request<MFProviderState>(`/mf/providers/${encodeURIComponent(provider)}/resume`, { method: "POST", body: JSON.stringify({}) }),
+  schemes: (monitoredOnly = false, query?: string) => {
+    const params = new URLSearchParams({ monitored_only: String(monitoredOnly), limit: "200", offset: "0" });
+    if (query) params.set("query", query);
+    return request<MFScheme[]>(`/mf/schemes?${params}`);
+  },
+  scheme: (schemeCode: number) => request<MFScheme>(`/mf/schemes/${schemeCode}`),
+  updateScheme: (schemeCode: number, body: { monitored?: boolean; notes?: string }) =>
+    request<MFScheme>(`/mf/schemes/${schemeCode}`, { method: "PATCH", body: JSON.stringify(body) }),
+  updateSchemeLinks: (
+    schemeCode: number,
+    body: {
+      valueresearch_url?: string | null;
+      morningstar_url?: string | null;
+      morningstar_sec_id?: string | null;
+    }
+  ) => request<MFScheme>(`/mf/schemes/${schemeCode}`, { method: "PATCH", body: JSON.stringify(body) }),
+  enableScheme: (schemeCode: number) =>
+    request<{ ok: boolean; monitored: boolean; enriched: boolean; metrics: number; signals: number; nav_date?: string }>(
+      `/mf/schemes/${schemeCode}/enable`,
+      { method: "POST", body: JSON.stringify({}) }
+    ),
+  nav: (schemeCode: number, limit = 400) =>
+    request<MFNavPoint[]>(`/mf/schemes/${schemeCode}/nav?limit=${limit}`),
+  metrics: (schemeCode: number) => request<any>(`/mf/schemes/${schemeCode}/metrics`),
+  indicators: (schemeCode: number, limit = 420) =>
+    request<MFIndicatorRecord[]>(`/mf/schemes/${schemeCode}/indicators?limit=${limit}`),
+  patterns: (schemeCode: number, lookback = 180) =>
+    request<MFPatternsResponse>(`/mf/schemes/${schemeCode}/patterns?lookback=${lookback}`),
+  holdings: (familyId: number) => request<any>(`/mf/families/${familyId}/holdings`),
+  refreshHoldings: (familyId: number) =>
+    request<{ ok: boolean; fetched?: boolean; month?: string; skipped?: boolean; reason?: string; error?: string }>(
+      `/mf/families/${familyId}/holdings/refresh`,
+      { method: "POST", body: JSON.stringify({}) }
+    ),
+  signals: (status = "pending", limit = 200) =>
+    request<MFSignal[]>(`/mf/signals?status=${encodeURIComponent(status)}&limit=${limit}`),
+  reviewSignal: (id: string, body: { action: string; notes?: string }) =>
+    request<{ ok: boolean }>(`/mf/signals/${id}/review`, { method: "POST", body: JSON.stringify(body) }),
+  rulebooks: () => request<MFRulebook[]>("/mf/rulebooks"),
+  rulebookCurrent: (rulebookId: string) => request<MFRulebookVersion>(`/mf/rulebooks/${rulebookId}/current`),
+  rulebookVersions: (rulebookId: string) => request<MFRulebookVersion[]>(`/mf/rulebooks/${rulebookId}/versions`),
+  createRulebook: (body: { name: string; status: string; rulebook_json: any; change_summary?: string }) =>
+    request<MFRulebook>("/mf/rulebooks", { method: "POST", body: JSON.stringify(body) }),
+  updateRulebook: (rulebookId: string, body: { name?: string; status?: string }) =>
+    request<MFRulebook>(`/mf/rulebooks/${rulebookId}`, { method: "PUT", body: JSON.stringify(body) }),
+  createRulebookVersion: (rulebookId: string, body: { rulebook_json: any; change_summary?: string; set_current?: boolean }) =>
+    request<MFRulebookVersion>(`/mf/rulebooks/${rulebookId}/versions`, { method: "POST", body: JSON.stringify(body) }),
+  activateRulebookVersion: (rulebookId: string, version: number) =>
+    request<MFRulebook>(`/mf/rulebooks/${rulebookId}/activate`, { method: "POST", body: JSON.stringify({ version }) }),
 };

@@ -79,6 +79,8 @@ async def chat(
     Primary: Grok 4.1 Fast   Fallback: DeepSeek V3.2
     Supports multimodal messages (content as list of text/image_url blocks).
     """
+    if settings.LLM_DISABLED or not settings.OPENROUTER_API_KEY:
+        return "LLM disabled (stub)."
     return await _call_with_fallback(
         primary=settings.LLM_CHAT_MODEL,
         fallback=settings.LLM_FALLBACK_MODEL,
@@ -98,6 +100,8 @@ async def reason(
     Structured reasoning — rulebook JSON extraction, pattern audits, analysis.
     Primary: Grok 4.1 Fast   Fallback: DeepSeek V3.2
     """
+    if settings.LLM_DISABLED or not settings.OPENROUTER_API_KEY:
+        return "{}"
     return await _call_with_fallback(
         primary=settings.LLM_REASONING_MODEL,
         fallback=settings.LLM_FALLBACK_MODEL,
@@ -117,6 +121,9 @@ async def screen(
     Fast scan-loop scoring — called per symbol, must be cheap & fast.
     Primary: Grok 4.1 Fast   Fallback: DeepSeek V3.2
     """
+    if settings.LLM_DISABLED or not settings.OPENROUTER_API_KEY:
+        # Expected by llm_screen: it parses freeform text, so keep it consistent.
+        return "Adjusted score: same as base. Analysis: LLM disabled (stub)."
     return await _call_with_fallback(
         primary=settings.LLM_SCREENING_MODEL,
         fallback=settings.LLM_FALLBACK_MODEL,

@@ -5,10 +5,12 @@ Starts with the FastAPI app via lifespan.
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from app.config import get_settings
 
 logger = logging.getLogger("patternos.scheduler")
 
 scheduler = AsyncIOScheduler()
+settings = get_settings()
 
 
 def start_scheduler():
@@ -18,6 +20,8 @@ def start_scheduler():
     async def daily_scan_nse():
         """Runs daily at 7:00 AM IST — before NSE market open."""
         logger.info("Running daily NSE scan...")
+        if settings.TELEGRAM_MODE.strip().lower() == "polling":
+            return
         from app.db.session import SessionLocal
         from app.scanner.engine import run_scan
         db = SessionLocal()
@@ -53,6 +57,84 @@ def start_scheduler():
             processed = await sync_feedback_from_telegram(db)
             if processed:
                 logger.info(f"Telegram feedback sync: processed {processed} callback updates")
+        finally:
+            db.close()
+
+    @scheduler.scheduled_job(CronTrigger(minute="*/1", timezone="Asia/Kolkata"))
+    async def deliver_telegram_outbox_job():
+        """Runs every minute — deliver queued Telegram alerts with retries."""
+        if not settings.TELEGRAM_ALERTS_ENABLED:
+            return
+        from app.db.session import SessionLocal
+        from app.alerts.telegram import deliver_queued_telegram_alerts
+        db = SessionLocal()
+        try:
+            sent = await deliver_queued_telegram_alerts(db, limit=25)
+            if sent:
+                logger.info(f"Telegram outbox: delivered {sent} alerts")
+        finally:
+            db.close()
+
+    @scheduler.scheduled_job(CronTrigger(hour=7, minute=15, timezone="Asia/Kolkata"))
+    async def reconcile_telegram_outbox_daily():
+        """Runs daily after scan — ensure today's signals have an outbox row to deliver."""
+        if not settings.TELEGRAM_ALERTS_ENABLED:
+            return
+        from app.db.session import SessionLocal
+        from app.alerts.telegram import reconcile_today_telegram_outbox
+        db = SessionLocal()
+        try:
+            added = reconcile_today_telegram_outbox(db)
+            if added:
+                logger.info(f"Telegram outbox reconcile: enqueued {added} missing alerts for today")
+        finally:
+            db.close()
+
+    @scheduler.scheduled_job(CronTrigger(hour=18, minute=30, timezone="Asia/Kolkata"))
+    async def daily_mf_nav_ingest():
+        """Runs daily at 6:30 PM IST — ingest AMFI NAVAll and compute MF signals for monitored schemes."""
+        if not settings.MF_INGESTION_ENABLED:
+            logger.info("MF ingestion disabled (MF_INGESTION_ENABLED=false); skipping NAV ingest.")
+            return
+        logger.info("Running MF daily NAV ingest...")
+        from app.db.session import SessionLocal
+        from app.mf.pipelines import ingest_amfi_navall
+        db = SessionLocal()
+        try:
+            stats = ingest_amfi_navall(db)
+            logger.info(f"MF NAV ingest complete: {stats}")
+        finally:
+            db.close()
+
+    @scheduler.scheduled_job(CronTrigger(day=7, hour=19, minute=0, timezone="Asia/Kolkata"))
+    async def monthly_mf_holdings_ingest():
+        """Runs monthly (7th) — fetch holdings snapshots for monitored MF families and compute portfolio signals."""
+        if not settings.MF_INGESTION_ENABLED or not settings.MF_HOLDINGS_ENABLED:
+            logger.info("MF holdings disabled; skipping holdings ingest (day 7).")
+            return
+        logger.info("Running MF monthly holdings ingest (day 7)...")
+        from app.db.session import SessionLocal
+        from app.mf.pipelines import ingest_monthly_holdings
+        db = SessionLocal()
+        try:
+            stats = ingest_monthly_holdings(db)
+            logger.info(f"MF holdings ingest complete: {stats}")
+        finally:
+            db.close()
+
+    @scheduler.scheduled_job(CronTrigger(day=10, hour=19, minute=0, timezone="Asia/Kolkata"))
+    async def monthly_mf_holdings_retry():
+        """Retry holdings ingest (day 10) to catch delayed AMC disclosures."""
+        if not settings.MF_INGESTION_ENABLED or not settings.MF_HOLDINGS_ENABLED:
+            logger.info("MF holdings disabled; skipping holdings ingest retry (day 10).")
+            return
+        logger.info("Running MF monthly holdings ingest retry (day 10)...")
+        from app.db.session import SessionLocal
+        from app.mf.pipelines import ingest_monthly_holdings
+        db = SessionLocal()
+        try:
+            stats = ingest_monthly_holdings(db)
+            logger.info(f"MF holdings ingest retry complete: {stats}")
         finally:
             db.close()
 

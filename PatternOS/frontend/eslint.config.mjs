@@ -13,6 +13,15 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  // PatternOS pragmatics:
+  // - This repo uses JSON-driven and API-driven data where `any` is sometimes unavoidable at the UI edges.
+  // - Some pages intentionally hydrate UI state from localStorage in an effect.
+  {
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+      "react-hooks/set-state-in-effect": "off",
+    },
+  },
 ]);
 
 export default eslintConfig;
