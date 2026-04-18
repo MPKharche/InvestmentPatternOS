@@ -8,15 +8,36 @@
 const BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api/v1";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`API error ${res.status}: ${err}`);
+  const maxRetries = 3;
+  const backoffMs = 1000;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(`${BASE}${path}`, {
+        headers: { "Content-Type": "application/json" },
+        ...options,
+      });
+
+      if (!res.ok) {
+        // If it's a 5xx error or 429 (Rate Limit), retry
+        if ((res.status >= 500 || res.status === 429) && attempt < maxRetries) {
+          const delay = backoffMs * Math.pow(2, attempt);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+        const err = await res.text();
+        throw new Error(`API error ${res.status}: ${err}`);
+      }
+      return res.json() as Promise<T>;
+    } catch (error) {
+      if (attempt === maxRetries) {
+        throw error;
+      }
+      const delay = backoffMs * Math.pow(2, attempt);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
   }
-  return res.json() as Promise<T>;
+  throw new Error("Request failed after maximum retries");
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -413,7 +434,216 @@ export const scannerApi = {
     ),
 };
 
-// ───────────────────────── Mutual Funds ─────────────────────────
+// ─── Data ─────────────────────────────────────────────────────────────────────
+
+export interface StockPrice {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface StockFundamentals {
+  pe_ratio?: number | null;
+  pb_ratio?: number | null;
+  debt_to_equity?: number | null;
+  roe?: number | null;
+  dividend_yield?: number | null;
+  beta?: number | null;
+  market_cap?: number | null;
+  enterprise_value?: number | null;
+  forward_pe?: number | null;
+  trailing_pe?: number | null;
+  eps?: number | null;
+  revenue_per_share?: number | null;
+}
+
+export interface StockDataResponse {
+  symbol: string;
+  exchange: string;
+  timeframe: string;
+  prices: StockPrice[];
+  fundamentals: StockFundamentals | null;
+}
+
+export interface IndexDataResponse {
+  index: string;
+  timeframe: string;
+  prices: StockPrice[];
+}
+
+export interface PCRData {
+  symbol: string;
+  pcr: number | null;
+  total_ce_oi: number;
+  total_pe_oi: number;
+}
+
+export interface OptionContract {
+  "strike": number;
+  "CE_LastPrice"?: number | null;
+  "PE_LastPrice"?: number | null;
+  "CE_OI"?: number | null;
+  "PE_OI"?: number | null;
+  [key: string]: unknown;
+}
+
+export interface OptionChainResponse {
+  symbol: string;
+  contracts: OptionContract[];
+}
+
+export const dataApi = {
+  getStock: (symbol: string, options?: { timeframe?: string; days?: number; exchange?: string; includeFundamentals?: boolean }) => {
+    const params = new URLSearchParams();
+    if (options?.timeframe) params.set("timeframe", options.timeframe);
+    if (options?.days) params.set("days", String(options.days));
+    if (options?.exchange) params.set("exchange", options.exchange);
+    if (options?.includeFundamentals !== undefined) params.set("include_fundamentals", String(options.includeFundamentals));
+    return request<StockDataResponse>(`/data/stock/${encodeURIComponent(symbol)}?${params}`);
+  },
+  getIndex: (indexName: string, options?: { timeframe?: string; days?: number }) => {
+    const params = new URLSearchParams();
+    if (options?.timeframe) params.set("timeframe", options.timeframe);
+    if (options?.days) params.set("days", String(options.days));
+    return request<IndexDataResponse>(`/data/index/${encodeURIComponent(indexName)}?${params}`);
+  },
+  getPCR: (symbol?: string) => {
+    const params = new URLSearchParams();
+    if (symbol) params.set("symbol", symbol);
+    return request<PCRData>(`/data/fno/pcr?${params}`);
+  },
+  getQuote: (symbol: string) => request<any>(`/data/fno/quote?symbol=${encodeURIComponent(symbol)}`),
+  getOptionChain: (symbol: string, expiry?: string) => {
+    const params = new URLSearchParams();
+    if (expiry) params.set("expiry", expiry);
+    return request<OptionChainResponse>(`/data/fno/option-chain?symbol=${encodeURIComponent(symbol)}&${params}`);
+  },
+};
+
+// ─── Compare ───────────────────────────────────────────────────────────────────
+
+export interface ComparisonItem {
+  symbol: string;
+  fundamentals: StockFundamentals;
+  technicals: {
+    sma20?: number | null;
+    sma50?: number | null;
+    rsi_14?: number | null;
+    macd: { macd: number | null; signal: number | null; histogram: number | null };
+    above_sma20: boolean | null;
+    above_sma50: boolean | null;
+    price: number | null;
+    error?: string;
+  };
+}
+
+export interface ComparisonResponse {
+  comparisons: ComparisonItem[];
+}
+
+export interface CorrelationResponse {
+  symbols: string[];
+  correlation: Record<string, Record<string, number | null>>;
+  method: string;
+  period_days: number;
+}
+
+export const compareApi = {
+  stocks: (symbols: string, exchange = "NSE") => request<ComparisonResponse>(`/compare/stocks?symbols=${encodeURIComponent(symbols)}&exchange=${exchange}`),
+  correlation: (symbols: string, days = 90, exchange = "NSE") => {
+    const params = new URLSearchParams({ days: String(days), exchange });
+    return request<CorrelationResponse>(`/compare/correlation?symbols=${encodeURIComponent(symbols)}&${params}`);
+  },
+};
+
+// ─── F&O Analysis ─────────────────────────────────────────────────────────────
+
+export interface OIBuildupResponse {
+  symbol: string;
+  expiry: string;
+  total_ce_oi: number;
+  total_pe_oi: number;
+  pcr: number | null;
+  top_call_strikes: OptionContract[];
+  top_put_strikes: OptionContract[];
+}
+
+export interface NiftyOiHistoryResponse {
+  symbol: string;
+  data: Array<{
+    date: string;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+    oi: number;
+    oi_change: number;
+  }>;
+}
+
+export const fnoApi = {
+  pcr: (symbol?: string) => request<PCRData>(`/fno/pcr?${symbol ? `symbol=${encodeURIComponent(symbol)}` : ""}`),
+  oiBuildup: (symbol: string, days = 5) => request<OIBuildupResponse>(`/fno/oi-buildup?symbol=${encodeURIComponent(symbol)}&days=${days}`),
+  niftyOiHistory: (days = 30) => request<NiftyOiHistoryResponse>(`/fno/nifty-oi-history?days=${days}`),
+};
+
+// ─── Analytics extensions ────────────────────────────────────────────────────
+
+export interface PatternPerformanceItem {
+  pattern_id: string;
+  pattern_name: string;
+  signals: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  avg_return_5d: number | null;
+  avg_return_10d: number | null;
+  avg_return_20d: number | null;
+  avg_return_63d: number | null;
+  avg_max_gain_20d: number | null;
+  avg_max_loss_20d: number | null;
+}
+
+export interface SectorHeatmapItem {
+  sector: string;
+  avg_return: number;
+  symbol_count: number;
+  best_performer: string | null;
+  best_return: number | null;
+  worst_performer: string | null;
+  worst_return: number | null;
+}
+
+export const analyticsApiExtended = {
+  patternPerformance: (params?: {
+    pattern_id?: string;
+    timeframe?: string;
+    sector?: string;
+    min_signals?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params?.pattern_id) qs.set("pattern_id", params.pattern_id);
+    if (params?.timeframe) qs.set("timeframe", params.timeframe);
+    if (params?.sector) qs.set("sector", params.sector);
+    if (params?.min_signals) qs.set("min_signals", String(params.min_signals));
+    return request<PatternPerformanceItem[]>(`/analytics/pattern-performance?${qs}`);
+  },
+  sectors: (timeframe = "1d", days = 30) => request<SectorHeatmapItem[]>(`/analytics/sectors?timeframe=${timeframe}&days=${days}`),
+  outcomes: (params?: { pattern_id?: string; symbol?: string; result?: string; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.pattern_id) qs.set("pattern_id", params.pattern_id);
+    if (params?.symbol) qs.set("symbol", params.symbol);
+    if (params?.result) qs.set("result", params.result);
+    if (params?.limit) qs.set("limit", String(params.limit));
+    return request<any[]>(`/analytics/outcomes?${qs}`);
+  },
+};
+
+// ───────────────────────────────────────────────────────────────────────────────
 
 export interface MFScheme {
   scheme_code: number;

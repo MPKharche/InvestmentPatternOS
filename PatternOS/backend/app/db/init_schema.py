@@ -10,17 +10,42 @@ Note:
     existing tables. For a full setup/update, run:
         python migrate.py
 """
+
 from app.db.session import engine, Base
 from app.db.models import (
-    Universe, Pattern, PatternVersion, Signal, SignalContext,
-    Review, Outcome, LearningLog, PatternChat, PatternEvent,
-    BacktestRun, PatternStudy, ScreeningCache,
-    PatternCandidate, SignalAlertJournal, TelegramFeedback,
-    PatternReviewCycle, TelegramSyncState,
-    MFScheme, MFNavDaily, MFNavMetricsDaily,
-    MFFamilyHoldingsSnapshot, MFHolding, MFSectorAlloc,
-    MFRulebook, MFRulebookVersion, MFSignal, MFIngestionRun,
-    MFProviderState, MFIngestionCursor, MFIngestionTask,
+    Universe,
+    Pattern,
+    PatternVersion,
+    Signal,
+    SignalContext,
+    Review,
+    Outcome,
+    LearningLog,
+    PatternChat,
+    PatternEvent,
+    BacktestRun,
+    PatternStudy,
+    ScreeningCache,
+    PatternCandidate,
+    SignalAlertJournal,
+    TelegramFeedback,
+    PatternReviewCycle,
+    TelegramSyncState,
+    StockPrice,
+    StockFundamental,
+    MFScheme,
+    MFNavDaily,
+    MFNavMetricsDaily,
+    MFFamilyHoldingsSnapshot,
+    MFHolding,
+    MFSectorAlloc,
+    MFRulebook,
+    MFRulebookVersion,
+    MFSignal,
+    MFIngestionRun,
+    MFProviderState,
+    MFIngestionCursor,
+    MFIngestionTask,
 )
 
 

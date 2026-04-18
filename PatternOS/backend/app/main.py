@@ -1,9 +1,24 @@
 """PatternOS — FastAPI application entry point."""
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
-from app.api.routes import universe, patterns, signals, outcomes, analytics, scanner, studio, mf, charts, meta
+from app.api.routes import (
+    universe,
+    patterns,
+    signals,
+    outcomes,
+    analytics,
+    scanner,
+    studio,
+    mf,
+    charts,
+    meta,
+    data,
+    compare,
+    fno,
+)
 from app.scheduler.jobs import start_scheduler, stop_scheduler
 from app.db.session import SessionLocal
 from app.db.canonical_pattern_seed import ensure_canonical_divergence_patterns
@@ -27,7 +42,9 @@ async def lifespan(app: FastAPI):
         try:
             expired_count = purge_expired_cache(db)
             if expired_count > 0:
-                print(f"[Cache] Purged {expired_count} expired screening results on startup")
+                print(
+                    f"[Cache] Purged {expired_count} expired screening results on startup"
+                )
             else:
                 print("[Cache] No expired entries to purge on startup")
         except Exception as e:
@@ -62,16 +79,19 @@ app.add_middleware(
 )
 
 # Register all routers
-app.include_router(universe.router,  prefix="/api/v1")
-app.include_router(patterns.router,  prefix="/api/v1")
-app.include_router(signals.router,   prefix="/api/v1")
-app.include_router(outcomes.router,  prefix="/api/v1")
+app.include_router(universe.router, prefix="/api/v1")
+app.include_router(patterns.router, prefix="/api/v1")
+app.include_router(signals.router, prefix="/api/v1")
+app.include_router(outcomes.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")
-app.include_router(scanner.router,   prefix="/api/v1")
-app.include_router(studio.router,    prefix="/api/v1")
-app.include_router(mf.router,        prefix="/api/v1")
-app.include_router(charts.router,    prefix="/api/v1")
-app.include_router(meta.router,      prefix="/api/v1")
+app.include_router(scanner.router, prefix="/api/v1")
+app.include_router(studio.router, prefix="/api/v1")
+app.include_router(mf.router, prefix="/api/v1")
+app.include_router(charts.router, prefix="/api/v1")
+app.include_router(meta.router, prefix="/api/v1")
+app.include_router(data.router, prefix="/api/v1")
+app.include_router(compare.router, prefix="/api/v1")
+app.include_router(fno.router, prefix="/api/v1")
 
 
 @app.get("/health")

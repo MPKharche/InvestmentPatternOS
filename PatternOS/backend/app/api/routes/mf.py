@@ -59,7 +59,17 @@ from app.config import get_settings
 from app.scanner.indicators import compute_indicators, indicators_to_records
 from app.scanner.talib_candles import detect_talib_candlestick_patterns
 from app.scanner.pattern_detector import detect_chart_patterns, detect_candlestick_patterns
-
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+import io
+import requests
+from app.charts.render import render_mf_nav_chart_png
 
 router = APIRouter(prefix="/mf", tags=["mutual-funds"])
 settings = get_settings()
@@ -1138,3 +1148,129 @@ def resume_provider_route(provider: str, db: Session = Depends(get_db)):
     if provider not in ("amfi", "mfdata", "mfapi", "valueresearch", "morningstar"):
         raise HTTPException(400, "Unknown provider")
     return resume_provider(db, provider)
+
+
+@router.get("/report/{scheme_code}", response_class=Response)
+def mf_report_pdf(scheme_code: int, db: Session = Depends(get_db)):
+    scheme = db.query(MFScheme).filter_by(scheme_code=scheme_code).first()
+    if not scheme:
+        raise HTTPException(404, "Scheme not found")
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=0.5*inch, leftMargin=0.5*inch,
+                            topMargin=0.75*inch, bottomMargin=0.75*inch)
+    story = []
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('CustomTitle', parent=styles['Title'], fontSize=18, spaceAfter=12, alignment=TA_CENTER)
+    heading_style = ParagraphStyle('CustomHeading', parent=styles['Heading2'], fontSize=12, spaceAfter=6, alignment=TA_CENTER)
+    normal_style = ParagraphStyle('Normal', parent=styles['Normal'], fontSize=9, spaceAfter=4, leading=11)
+    small_style = ParagraphStyle('Small', parent=styles['Normal'], fontSize=8, spaceAfter=3, leading=10)
+
+    # Title
+    story.append(Paragraph(f"<b>{scheme.scheme_name or f'Scheme {scheme.scheme_code}'}</b>", title_style))
+    story.append(Paragraph(f"AMFI: {scheme.scheme_code} | AMC: {scheme.amc_name or '—'} | Category: {scheme.category or '—'}", normal_style))
+    story.append(Spacer(1, 6))
+
+    # NAV Chart PNG
+    try:
+        png_buffer = io.BytesIO()
+        render_mf_nav_chart_png(scheme_code, png_buffer, days_back=365, indicators='rsi,macd')
+        png_buffer.seek(0)
+        img = Image(png_buffer, width=6.5*inch, height=3.5*inch)
+        story.append(img)
+        story.append(Spacer(1, 12))
+    except Exception as e:
+        story.append(Paragraph(f"<i>Chart unavailable: {str(e)}</i>", small_style))
+
+    # Latest NAV & Metrics
+    latest_nav = scheme.latest_nav
+    if latest_nav:
+        story.append(Paragraph(f"<b>Latest NAV:</b> ₹{latest_nav:.4f} ({scheme.latest_nav_date or '—'})", normal_style))
+    metrics = db.query(MFNavMetricsDaily).filter_by(scheme_code=scheme_code).order_by(MFNavMetricsDaily.nav_date.desc()).first()
+    if metrics:
+        story.append(Paragraph(f"1W: {metrics.ret_7d:.1f}% | 1M: {metrics.ret_30d:.1f}% | 3M: {metrics.ret_90d:.1f}% | 1Y: {metrics.ret_365d:.1f}%", normal_style))
+    story.append(Spacer(1, 12))
+
+    # Risk & Expense
+    story.append(Paragraph("<b>Risk & Costs</b>", heading_style))
+    data = [
+        ['Riskometer', scheme.risk_label or '—'],
+        ['Expense Ratio', f"{scheme.expense_ratio:.2f}%" if scheme.expense_ratio else '—'],
+        ['Min SIP', f"₹{scheme.min_sip:,.0f}" if scheme.min_sip else '—'],
+    ]
+    t = Table(data)
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.grey),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,0), (-1,0), 9),
+        ('FONTSIZE', (0,1), (-1,-1), 8),
+        ('BOTTOMPADDING', (0,0), (-1,0), 12),
+        ('BACKGROUND', (0,1), (-1,-1), colors.beige),
+        ('GRID', (0,0), (-1,-1), 1, colors.black)
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 12))
+
+    # Top Holdings
+    if scheme.family_id:
+        holdings_snap = db.query(MFFamilyHoldingsSnapshot).filter_by(family_id=scheme.family_id).order_by(MFFamilyHoldingsSnapshot.month.desc()).first()
+        if holdings_snap:
+            holdings = db.query(MFHolding).filter_by(snapshot_id=holdings_snap.id).order_by(MFHolding.weight_pct.desc()).limit(10).all()
+            story.append(Paragraph(f"<b>Top Holdings ({holdings_snap.month})</b>", heading_style))
+            hdata = [['Name', 'Type', 'Weight']]
+            for h in holdings:
+                hdata.append([h.name or '—', h.holding_type or '—', f"{h.weight_pct:.1f}%" if h.weight_pct else '—'])
+            ht = Table(hdata, colWidths=[3*inch, 1.2*inch, 0.8*inch])
+            ht.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.grey),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+                ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0,0), (-1,0), 9),
+                ('FONTSIZE', (0,1), (-1,-1), 8),
+                ('GRID', (0,0), (-1,-1), 1, colors.black)
+            ]))
+            story.append(ht)
+            story.append(Spacer(1, 12))
+
+    # Recent Signals
+    recent_signals = db.query(MFSignal).filter_by(scheme_code=scheme_code, status='pending').order_by(MFSignal.nav_date.desc()).limit(5).all()
+    if recent_signals:
+        story.append(Paragraph("<b>Recent Signals</b>", heading_style))
+        sdata = [['Type', 'Confidence', 'NAV Date']]
+        for s in recent_signals:
+            sdata.append([s.signal_type or '—', f"{s.confidence_score:.0f}%", s.nav_date or '—'])
+        st = Table(sdata)
+        st.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.green),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0,0), (-1,0), 9),
+            ('FONTSIZE', (0,1), (-1,-1), 8),
+            ('GRID', (0,0), (-1,-1), 1, colors.black)
+        ]))
+        story.append(st)
+
+    # Links
+    story.append(Spacer(1, 12))
+    story.append(Paragraph("<b>Links</b>", heading_style))
+    links_data = []
+    if scheme.valueresearch_url:
+        links_data.append(['ValueResearch', scheme.valueresearch_url])
+    if scheme.morningstar_url:
+        links_data.append(['Morningstar', scheme.morningstar_url])
+    if links_data:
+        lt = Table(links_data, colWidths=[1.5*inch, 5.5*inch])
+        lt.setStyle(TableStyle([('ALIGN', (1,0), (1,-1), 'LEFT'), ('FONTSIZE', (0,0), (-1,-1), 8)]))
+        story.append(lt)
+    else:
+        story.append(Paragraph("No external links configured", small_style))
+
+    # Build PDF
+    doc.build(story)
+    buffer.seek(0)
+    return Response(content=buffer.getvalue(), media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename=scheme_{scheme_code}_1pager.pdf"})

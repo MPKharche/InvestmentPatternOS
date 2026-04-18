@@ -79,6 +79,9 @@ export default function StatusPage() {
             If you’re running locally on Windows, start everything using:
           </div>
           <div className="font-mono text-xs bg-muted/40 border border-border rounded p-2">dev-up.bat (double-click)</div>
+          <div className="text-xs text-amber-500/80 mt-1">
+            Tip: If you see "Connection Refused", ensure the backend is running at http://localhost:8000
+          </div>
         </div>
       ) : null,
     },

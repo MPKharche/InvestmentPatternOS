@@ -583,7 +583,7 @@ export default function MFSchemeDetailPage() {
   };
 
   return (
-    <div className="space-y-4 max-w-6xl">
+    <div className="space-y-4 w-full">
       <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
         <div className="min-w-0">
           <h1 className="text-2xl font-bold truncate">{scheme?.scheme_name ?? `Scheme ${schemeCode}`}</h1>
@@ -730,8 +730,8 @@ export default function MFSchemeDetailPage() {
         </Card>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <Card className="lg:col-span-2">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm">Holdings (Latest)</CardTitle>
           </CardHeader>

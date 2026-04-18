@@ -13,6 +13,7 @@ import {
   Radio,
   Sparkles,
   Activity,
+  LineChart,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -41,6 +42,7 @@ const GROUPS: NavGroup[] = [
     label: "Mutual Funds",
     items: [
       { href: "/mf", label: "Dashboard", icon: LayoutDashboard },
+      { href: "/mf/chart", label: "Chart Tool", icon: LineChart },
       { href: "/mf/schemes", label: "Schemes", icon: Globe },
       { href: "/mf/signals", label: "Signals", icon: Radio },
       { href: "/mf/rulebooks", label: "Rulebooks", icon: Sparkles },
