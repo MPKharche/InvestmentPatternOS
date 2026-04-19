@@ -18,6 +18,7 @@ from app.api.routes import (
     data,
     compare,
     fno,
+    screener,
 )
 from app.scheduler.jobs import start_scheduler, stop_scheduler
 from app.db.session import SessionLocal
@@ -92,6 +93,7 @@ app.include_router(meta.router, prefix="/api/v1")
 app.include_router(data.router, prefix="/api/v1")
 app.include_router(compare.router, prefix="/api/v1")
 app.include_router(fno.router, prefix="/api/v1")
+app.include_router(screener.router, prefix="/api/v1")
 
 
 @app.get("/health")

@@ -643,7 +643,95 @@ export const analyticsApiExtended = {
   },
 };
 
-// ───────────────────────────────────────────────────────────────────────────────
+// ============================================================================
+// Custom Screener
+// ============================================================================
+
+export interface ScreenerCondition {
+  field: string;
+  operator: string;
+  value?: number | string | boolean | null;
+  min?: number;
+  max?: number;
+}
+
+export interface ScreenerRules {
+  logic: "AND" | "OR";
+  conditions: ScreenerCondition[];
+}
+
+export interface Screener {
+  id: string;
+  name: string;
+  description: string | null;
+  asset_class: "equity" | "mf";
+  scope: "nifty50" | "nifty500" | "custom";
+  custom_symbols?: string[] | null;
+  rules: ScreenerRules;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ScreenerResultItem {
+  id: string;
+  symbol: string;
+  date: string;
+  passed: boolean;
+  score: number | null;
+  metrics: Record<string, unknown>;
+}
+
+export interface ScreenerRun {
+  id: string;
+  triggered_at: string;
+  symbols_total: number;
+  symbols_passed: number;
+  duration_sec: number;
+  status: "queued" | "running" | "completed" | "failed";
+}
+
+export interface ScreenerRunDetail extends ScreenerRun {
+  filters?: Record<string, unknown> | null;
+  results?: ScreenerResultItem[];
+}
+
+export const screenerApi = {
+  // CRUD
+  list: (assetClass?: "equity" | "mf") => {
+    const params = new URLSearchParams();
+    if (assetClass) params.set("asset_class", assetClass);
+    return request<Screener[]>(`/screener/?${params}`);
+  },
+  get: (id: string) => request<Screener>(`/screener/${id}`),
+  create: (body: {
+    name: string;
+    description?: string;
+    asset_class: string;
+    scope: "nifty50" | "nifty500" | "custom";
+    custom_symbols?: string[];
+    rules: ScreenerRules;
+  }) => request<Screener>("/screener/", { method: "POST", body: JSON.stringify(body) }),
+  update: (id: string, body: Partial<{ name: string; description: string; rules: ScreenerRules; scope: string; custom_symbols: string[] }>) =>
+    request<Screener>(`/screener/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  delete: (id: string) => request<void>(`/screener/${id}`, { method: "DELETE" }),
+
+  // Execution
+  run: (body: { screener_id: string; timeframe?: string; use_cache?: boolean }) =>
+    request<{ run_id: string; status: string }>("/screener/run", { method: "POST", body: JSON.stringify(body) }),
+  getRunStatus: (runId: string) => request<ScreenerRun>(`/screener/run/${runId}/status`),
+  getRunResults: (runId: string) => request<ScreenerResultItem[]>(`/screener/run/${runId}/results`),
+
+  // Results
+  getResults: (id: string, passedOnly?: boolean, limit = 100) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (passedOnly) params.set("passed_only", "true");
+    return request<ScreenerResultItem[]>(`/screener/${id}/results?${params}`);
+  },
+  getRuns: (id: string, limit = 20) =>
+    request<ScreenerRun[]>(`/screener/${id}/runs?limit=${limit}`),
+};
+
+// ============================================================================
 
 export interface MFScheme {
   scheme_code: number;

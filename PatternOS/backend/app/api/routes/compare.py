@@ -14,6 +14,19 @@ import numpy as np
 router = APIRouter(prefix="/compare", tags=["compare"])
 
 
+def _to_native(val):
+    """Convert numpy types to Python native, handling NaN/Inf."""
+    if val is None:
+        return None
+    # Check for NaN or Inf
+    try:
+        if isinstance(val, float) and (np.isnan(val) or np.isinf(val)):
+            return None
+        return float(val) if hasattr(val, "item") else val
+    except (TypeError, ValueError):
+        return val
+
+
 def _calculate_technical_indicators(df: pd.DataFrame) -> dict:
     """Basic TA: SMA20, SMA50, RSI14, MACD."""
     close = df["Close"]
@@ -40,17 +53,42 @@ def _calculate_technical_indicators(df: pd.DataFrame) -> dict:
     }
 
     price = close.iloc[-1] if not close.empty else None
-    above_sma20 = price > sma20 if price and sma20 else None
-    above_sma50 = price > sma50 if price and sma50 else None
+    above_sma20 = (
+        bool(price > sma20) if price is not None and sma20 is not None else None
+    )
+    above_sma50 = (
+        bool(price > sma50) if price is not None and sma50 is not None else None
+    )
 
     return {
-        "sma20": round(sma20, 2) if sma20 else None,
-        "sma50": round(sma50, 2) if sma50 else None,
-        "rsi_14": round(rsi, 2) if rsi else None,
-        "macd": {k: round(v, 4) if v is not None else None for k, v in macd.items()},
+        "sma20": _to_native(sma20),
+        "sma50": _to_native(sma50),
+        "rsi_14": _to_native(rsi),
+        "macd": {k: _to_native(v) for k, v in macd.items()},
         "above_sma20": above_sma20,
         "above_sma50": above_sma50,
-        "price": round(price, 2) if price else None,
+        "price": _to_native(price),
+    }
+
+    price = close.iloc[-1] if not close.empty else None
+    # Convert numpy.bool_ to Python bool
+    above_sma20 = (
+        bool(price > sma20) if price is not None and sma20 is not None else None
+    )
+    above_sma50 = (
+        bool(price > sma50) if price is not None and sma50 is not None else None
+    )
+
+    return {
+        "sma20": round(float(sma20), 2) if sma20 is not None else None,
+        "sma50": round(float(sma50), 2) if sma50 is not None else None,
+        "rsi_14": round(float(rsi), 2) if rsi is not None else None,
+        "macd": {
+            k: round(float(v), 4) if v is not None else None for k, v in macd.items()
+        },
+        "above_sma20": above_sma20,
+        "above_sma50": above_sma50,
+        "price": round(float(price), 2) if price is not None else None,
     }
 
 

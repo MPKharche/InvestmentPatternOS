@@ -46,6 +46,9 @@ from app.db.models import (
     MFProviderState,
     MFIngestionCursor,
     MFIngestionTask,
+    ScreenerCriteria,
+    ScreenerResult,
+    ScreenerRun,
 )
 
 

@@ -5,11 +5,19 @@ Provides:
 - PCR (Put-Call Ratio) for Nifty and stocks
 - Open Interest data
 - F&O contract details
+
+Note: NSEpy scrapes NSE website which may be blocked or have SSL issues.
+All functions return empty/None on failure.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import os
+
+# Disable SSL verification for nsepy (NSE website SSL issues)
+os.environ["PYTHONHTTPSVERIFY"] = "0"
+
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 import pandas as pd
 
@@ -18,17 +26,27 @@ from app.db.models import ScreeningCache  # reuse existing cache pattern
 from app.data.yfinance_client import CACHE_TTL_HOURS
 
 try:
+    import warnings
+
+    warnings.filterwarnings("ignore", category=UserWarning, module="urllib3")
+    import urllib3
+
+    urllib3.disable_warnings()
+
     from nsepy import get_history, get_quote
-    from nsepy.constants import INDEX_SPECIFIERS
+    from nsepy.live import get_option_chain
 
     NSEPY_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     NSEPY_AVAILABLE = False
+    _IMPORT_ERROR = str(e)
 
 
 def _check_nsepy() -> None:
     if not NSEPY_AVAILABLE:
-        raise RuntimeError("nsepy is not installed. Run: pip install nsepy")
+        raise RuntimeError(
+            f"nsepy is not installed or failed to import. Error: {_IMPORT_ERROR}. Run: pip install nsepy"
+        )
 
 
 def fetch_nifty_50_oi(
@@ -41,7 +59,6 @@ def fetch_nifty_50_oi(
     Returns DataFrame with columns: Date, Open, High, Low, Close, SettlePrice, Volume, OpenInterest, ChangeinOI
     """
     _check_nsepy()
-    from nsepy.constants import IndexSymbol
 
     if start_date is None:
         start_date = datetime.now() - timedelta(days=30)
@@ -81,8 +98,6 @@ def fetch_pcr_data(
     _check_nsepy()
 
     try:
-        from nsepy import get_option_chain
-
         if symbol:
             # Stock-specific PCR from option chain
             oc = get_option_chain(symbol=symbol, expiry=None)
@@ -108,6 +123,7 @@ def fetch_pcr_data(
             }
     except Exception as e:
         print(f"[NSEpy] Error fetching PCR: {e}")
+        # Fallback: try yfinance for basic option data? Not reliable for PCR.
         return {"pcr": None, "total_ce_oi": 0, "total_pe_oi": 0}
 
 

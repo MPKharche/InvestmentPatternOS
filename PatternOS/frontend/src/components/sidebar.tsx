@@ -14,6 +14,9 @@ import {
   Sparkles,
   Activity,
   LineChart,
+  TrendingUp,
+  GitCompare,
+  BarChart2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -23,20 +26,23 @@ type NavItem = { href: string; label: string; icon: React.ElementType };
 type NavGroup = { key: "equity" | "mf"; label: string; items: NavItem[] };
 
 const GROUPS: NavGroup[] = [
-  {
-    key: "equity",
-    label: "Equity",
-    items: [
-      { href: "/", label: "Dashboard", icon: LayoutDashboard },
-      { href: "/signals", label: "Signal Inbox", icon: Radio },
-      { href: "/studio", label: "Pattern Studio", icon: Sparkles },
-      { href: "/chart", label: "Chart Tool", icon: CandlestickChart },
-      { href: "/journal", label: "Trade Journal", icon: BookOpen },
-      { href: "/analytics", label: "Analytics", icon: BarChart3 },
-      { href: "/universe", label: "Universe", icon: Globe },
-      { href: "/status", label: "System Status", icon: Activity },
-    ],
-  },
+   {
+     key: "equity",
+     label: "Equity",
+     items: [
+       { href: "/", label: "Dashboard", icon: LayoutDashboard },
+       { href: "/signals", label: "Signal Inbox", icon: Radio },
+       { href: "/studio", label: "Pattern Studio", icon: Sparkles },
+       { href: "/chart", label: "Chart Tool", icon: CandlestickChart },
+       { href: "/journal", label: "Trade Journal", icon: BookOpen },
+       { href: "/analytics", label: "Analytics", icon: BarChart3 },
++      { href: "/analytics/sectors", label: "Sector Heatmap", icon: TrendingUp },
++      { href: "/compare", label: "Compare Stocks", icon: GitCompare },
++      { href: "/fno", label: "F&O Analysis", icon: BarChart2 },
+       { href: "/universe", label: "Universe", icon: Globe },
+       { href: "/status", label: "System Status", icon: Activity },
+     ],
+   },
   {
     key: "mf",
     label: "Mutual Funds",

@@ -328,8 +328,8 @@ def sector_heatmap(
             }
         )
 
-        result.sort(key=lambda x: -x["avg_return"])
-        return result
+    result.sort(key=lambda x: -x["avg_return"])
+    return result
 
 
 @router.get("/outcomes")

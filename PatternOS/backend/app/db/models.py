@@ -706,3 +706,92 @@ class MFIngestionRun(Base):
     status = Column(String(20), nullable=False, default="running")
     stats_json = Column(JSONB)
     error_text = Column(Text)
+
+
+# ============================================================================
+# Custom Screener — user-defined rule-based screening
+# ============================================================================
+
+
+class ScreenerCriteria(Base):
+    """Saved screening rule sets."""
+
+    __tablename__ = "screener_criteria"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    name = Column(String(200), nullable=False)
+    description = Column(Text)
+    asset_class = Column(String(30), nullable=False, default="equity")  # equity|mf
+    scope = Column(
+        String(30), nullable=False, default="nifty500"
+    )  # nifty50|nifty500|custom
+    custom_symbols = Column(JSONB)  # array of strings if scope='custom'
+    rules_json = Column(
+        JSONB, nullable=False
+    )  # { "logic": "AND", "conditions": [...] }
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    results = relationship(
+        "ScreenerResult", back_populates="screener", cascade="all, delete-orphan"
+    )
+    runs = relationship(
+        "ScreenerRun", back_populates="screener", cascade="all, delete-orphan"
+    )
+
+    @property
+    def rules(self):
+        """Expose rules_json as rules for API compatibility."""
+        return self.rules_json
+
+    @rules.setter
+    def rules(self, value):
+        """Set rules_json when rules is assigned."""
+        self.rules_json = value
+
+
+class ScreenerResult(Base):
+    """Cached scan results — one row per symbol per screener per day."""
+
+    __tablename__ = "screener_results"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    screener_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("screener_criteria.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    symbol = Column(String(20), nullable=False)
+    signal_date = Column(Date, nullable=False)  # date of the price bar evaluated
+    metrics_json = Column(JSONB)  # {"rsi": 23.5, "pe": 12.4, ...}
+    passed = Column(Boolean, nullable=False, default=False)
+    score = Column(Float)  # 0-100 match score
+    computed_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+    screener = relationship("ScreenerCriteria", back_populates="results")
+    __table_args__ = (
+        UniqueConstraint("screener_id", "symbol", "signal_date"),
+        Index("idx_screener_results_lookup", "screener_id", "passed", "signal_date"),
+    )
+
+
+class ScreenerRun(Base):
+    """Audit log of screener executions."""
+
+    __tablename__ = "screener_runs"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    screener_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("screener_criteria.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    triggered_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    symbols_total = Column(Integer, nullable=False)  # universe size
+    symbols_passed = Column(Integer, nullable=False)  # matched
+    duration_sec = Column(Float, nullable=False)
+    filters_json = Column(JSONB)  # runtime params: timeframe, use_cache, etc.
+    status = Column(
+        String(20), nullable=False, default="completed"
+    )  # queued|running|completed|failed
+
+    screener = relationship("ScreenerCriteria", back_populates="runs")

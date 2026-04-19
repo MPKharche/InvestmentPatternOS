@@ -22,10 +22,6 @@ from app.db.session import SessionLocal
 # Cache TTL: 24 hours
 CACHE_TTL_HOURS = 24
 
-# NSE symbol mapping
-NSE_SUFFIX = ".NS"
-BSE_SUFFIX = ".BO"
-
 
 def _normalize_symbol(symbol: str, exchange: str = "NSE") -> str:
     """Add exchange suffix if missing."""
@@ -92,7 +88,7 @@ def fetch_stock_prices(
                 idx = [pd.Timestamp(p.trade_date) for p in reversed(recent_prices)]
                 df = pd.DataFrame(data, index=idx)
                 df.dropna(inplace=True)
-                if len(df) >= 10:
+                if len(df) >= 5:
                     return df
 
         # Fetch from yfinance
@@ -100,7 +96,6 @@ def fetch_stock_prices(
         end = datetime.utcnow()
         start = end - timedelta(days=days)
 
-        # Map timeframe to yfinance interval
         interval_map = {
             "1d": "1d",
             "1h": "1h",
@@ -112,7 +107,7 @@ def fetch_stock_prices(
         interval = interval_map.get(timeframe, "1d")
         df = ticker.history(start=start, end=end, interval=interval, auto_adjust=True)
 
-        if df.empty or len(df) < 10:
+        if df.empty or len(df) < 5:
             return pd.DataFrame()
 
         df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
@@ -122,6 +117,14 @@ def fetch_stock_prices(
         _cache_stock_prices(db, normalized, timeframe, df)
 
         return df
+    except Exception as e:
+        # Log error but don't crash
+        import logging
+
+        logging.getLogger("patternos.data").error(
+            f"yfinance error for {normalized}: {e}"
+        )
+        return pd.DataFrame()
     finally:
         db.close()
 
@@ -130,10 +133,8 @@ def _cache_stock_prices(
     db: Session, symbol: str, timeframe: str, df: pd.DataFrame
 ) -> None:
     """Store price data in PostgreSQL cache, replacing old entries."""
-    # Delete existing entries for this symbol+timeframe
     db.query(StockPrice).filter_by(symbol=symbol, timeframe=timeframe).delete()
 
-    # Insert new rows
     records = []
     for date_idx, row in df.iterrows():
         date_val = date_idx.date() if hasattr(date_idx, "date") else date_idx
@@ -217,6 +218,13 @@ def fetch_stock_info(
         _cache_fundamentals(db, normalized, fundamentals)
 
         return fundamentals
+    except Exception as e:
+        import logging
+
+        logging.getLogger("patternos.data").error(
+            f"Fundamentals error for {normalized}: {e}"
+        )
+        return {}
     finally:
         db.close()
 
@@ -250,7 +258,6 @@ def fetch_index_prices(
     Fetch index data from yfinance.
     index_name examples: "^NSEI" (Nifty 50), "^BSESN" (Sensex), "^NSEBANK" (Bank Nifty)
     """
-    # Map common index names to tickers
     index_tickers = {
         "NIFTY": "^NSEI",
         "NIFTY 50": "^NSEI",
