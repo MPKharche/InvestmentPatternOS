@@ -6,6 +6,7 @@ import {
   LineSeries,
   HistogramSeries,
   ColorType,
+  LineStyle,
   type IChartApi,
   type Time,
 } from "lightweight-charts";
@@ -127,7 +128,7 @@ export function IndicatorCharts({
           sUpper.setData(prices.map((p2, i) => ({ time: p2.date as Time, value: upper[i] })).filter((d) => d.value != null));
         }
         if (mid) {
-          const sMid = priceChart.addSeries(LineSeries, { color: COLORS.bb[1], lineWidth: 1, lineStyle: 2, title: "BB Mid" });
+          const sMid = priceChart.addSeries(LineSeries, { color: COLORS.bb[1], lineWidth: 1, lineStyle: LineStyle.Dashed, title: "BB Mid" });
           sMid.setData(prices.map((p2, i) => ({ time: p2.date as Time, value: mid[i] })).filter((d) => d.value != null));
         }
         if (lower) {
@@ -160,10 +161,9 @@ export function IndicatorCharts({
         // Overbought/oversold lines
         const start = prices[0].date as Time;
         const end = prices[prices.length - 1].date as Time;
-        const lineOpts = { lineWidth: 1, lineStyle: 2, color: "#6b7280" };
-        const overbought = rsiChart.addSeries(LineSeries, { ...lineOpts, color: "#ef4444" });
+        const overbought = rsiChart.addSeries(LineSeries, { lineWidth: 1, lineStyle: LineStyle.Dashed, color: "#ef4444" });
         overbought.setData([{ time: start, value: 70 }, { time: end, value: 70 }]);
-        const oversold = rsiChart.addSeries(LineSeries, { ...lineOpts, color: "#22c55e" });
+        const oversold = rsiChart.addSeries(LineSeries, { lineWidth: 1, lineStyle: LineStyle.Dashed, color: "#22c55e" });
         oversold.setData([{ time: start, value: 30 }, { time: end, value: 30 }]);
       }
     }

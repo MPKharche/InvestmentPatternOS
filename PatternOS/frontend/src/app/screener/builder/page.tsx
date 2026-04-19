@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { screenerApi, type Screener, type ScreenerRules, type ScreenerCondition, type ScreenerTemplate } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -44,7 +44,7 @@ const OPERATOR_OPTIONS = [
   { value: "between", label: "between" },
 ];
 
-export default function ScreenerBuilderPage() {
+function ScreenerBuilderPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const editId = searchParams.get("id");
@@ -212,7 +212,7 @@ export default function ScreenerBuilderPage() {
         </CardHeader>
         <CardContent>
           <div className="flex items-center gap-2 mb-3">
-            <Select value={presetCategory} onValueChange={setPresetCategory}>
+            <Select value={presetCategory} onValueChange={(v) => setPresetCategory(v ?? "")}>
               <SelectTrigger className="w-36">
                 <SelectValue />
               </SelectTrigger>
@@ -285,13 +285,13 @@ export default function ScreenerBuilderPage() {
               <div key={idx} className="flex items-center gap-2 p-3 border rounded-md bg-muted/20">
                 <GripVertical className="h-4 w-4 text-muted-foreground" />
                 <div className="flex-1 grid grid-cols-4 gap-2">
-                  <Select value={cond.field} onValueChange={v => updateCondition(idx, { field: v })}>
+                  <Select value={cond.field} onValueChange={(v) => updateCondition(idx, { field: v ?? "" })}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {FIELD_OPTIONS.map(f => <SelectItem key={f.value} value={f.value}>{f.label}</SelectItem>)}
                     </SelectContent>
                   </Select>
-                  <Select value={cond.operator} onValueChange={v => updateCondition(idx, { operator: v })}>
+                  <Select value={cond.operator} onValueChange={(v) => updateCondition(idx, { operator: v ?? "" })}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {OPERATOR_OPTIONS.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
@@ -308,7 +308,7 @@ export default function ScreenerBuilderPage() {
                       type={cond.field.startsWith("pe") || cond.field.includes("rsi") || cond.field.includes("sma") ? "number" : "text"}
                       step="any"
                       placeholder="value"
-                      value={cond.value ?? ""}
+                      value={cond.value === undefined || cond.value === null ? "" : String(cond.value)}
                       onChange={e => {
                         const val = e.target.value;
                         updateCondition(idx, { value: val === "" ? undefined : (cond.field === "rsi" || cond.field.includes("pe") ? parseFloat(val) : val) });
@@ -337,5 +337,13 @@ export default function ScreenerBuilderPage() {
         <Button variant="ghost" onClick={() => router.push("/screener")}>Cancel</Button>
       </div>
     </div>
+  );
+}
+
+export default function ScreenerBuilderPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <ScreenerBuilderPageContent />
+    </Suspense>
   );
 }

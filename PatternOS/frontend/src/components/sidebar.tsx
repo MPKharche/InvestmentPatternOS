@@ -36,9 +36,9 @@ const GROUPS: NavGroup[] = [
        { href: "/chart", label: "Chart Tool", icon: CandlestickChart },
        { href: "/journal", label: "Trade Journal", icon: BookOpen },
        { href: "/analytics", label: "Analytics", icon: BarChart3 },
-+      { href: "/analytics/sectors", label: "Sector Heatmap", icon: TrendingUp },
-+      { href: "/compare", label: "Compare Stocks", icon: GitCompare },
-+      { href: "/fno", label: "F&O Analysis", icon: BarChart2 },
+      { href: "/analytics/sectors", label: "Sector Heatmap", icon: TrendingUp as React.ElementType },
+      { href: "/compare", label: "Compare Stocks", icon: GitCompare as React.ElementType },
+      { href: "/fno", label: "F&O Analysis", icon: BarChart2 as React.ElementType },
        { href: "/universe", label: "Universe", icon: Globe },
        { href: "/status", label: "System Status", icon: Activity },
      ],
@@ -146,9 +146,9 @@ export function Sidebar({
 
               {isOpen && (
                 <div className="mt-1 flex flex-col gap-1">
-                  {g.items.map(({ href, label, icon: Icon }) => (
+                  {g.items.map(({ href, label, icon: Icon }, index) => (
                     <Link
-                      key={href}
+                      key={index}
                       href={href}
                       onClick={() => onMobileClose()}
                       title={collapsed ? label : undefined}
