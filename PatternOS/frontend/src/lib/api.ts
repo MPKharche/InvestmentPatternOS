@@ -760,6 +760,19 @@ export interface ScreenerRunDetail extends ScreenerRun {
   results?: ScreenerResultItem[];
 }
 
+export interface ScreenerTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  category: string;
+  asset_class: string;
+  rules_json: { logic: "AND" | "OR"; conditions: any[] };
+  tags: string[] | null;
+  is_active: boolean;
+  usage_count: number;
+  created_at: string;
+}
+
 export const screenerApi = {
   // CRUD
   list: (assetClass?: "equity" | "mf") => {
@@ -794,6 +807,11 @@ export const screenerApi = {
   },
   getRuns: (id: string, limit = 20) =>
     request<ScreenerRun[]>(`/screener/${id}/runs?limit=${limit}`),
+  getPresets: (category?: string) => {
+    const params = new URLSearchParams();
+    if (category) params.set("category", category);
+    return request<ScreenerTemplate[]>(`/screener/presets?${params}`);
+  },
 };
 
 // ============================================================================

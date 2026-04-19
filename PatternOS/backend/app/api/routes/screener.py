@@ -8,7 +8,12 @@ from datetime import datetime
 from uuid import UUID
 
 from app.db.session import get_db, SessionLocal
-from app.db.models import ScreenerCriteria, ScreenerResult, ScreenerRun
+from app.db.models import (
+    ScreenerCriteria,
+    ScreenerResult,
+    ScreenerRun,
+    ScreenerTemplate,
+)
 from app.screener.engine import run_screener, get_screener_results
 
 router = APIRouter(prefix="/screener", tags=["screener"])
@@ -113,6 +118,21 @@ class ScreenerRunDetail(ScreenerRunOut):
     results: Optional[List[dict]] = None
 
 
+class ScreenerTemplateOut(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    category: str
+    asset_class: str
+    rules_json: dict
+    tags: Optional[List[str]] = None
+    is_active: bool
+    usage_count: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 # ============================================================================
 # CRUD
 # ============================================================================
@@ -185,6 +205,38 @@ def delete_screener(id: str, db: Session = Depends(get_db)):
     db.delete(screener)
     db.commit()
     return None
+
+
+# ============================================================================
+# Presets / Templates
+# ============================================================================
+
+
+@router.get("/presets", response_model=List[ScreenerTemplateOut])
+def list_presets(
+    category: Optional[str] = Query(None),
+    asset_class: str = Query("equity", pattern="^(equity|mf)$"),
+    db: Session = Depends(get_db),
+):
+    """
+    List available screener preset templates.
+
+    These are pre-defined rule sets users can instantly apply in the builder.
+
+    Args:
+        category: Filter by category ("technical", "fundamental", "momentum", "value")
+        asset_class: "equity" or "mf"
+
+    Returns:
+        List of templates with name, description, rules_json, tags, usage_count
+    """
+    query = db.query(ScreenerTemplate).filter_by(
+        is_active=True, asset_class=asset_class
+    )
+    if category:
+        query = query.filter_by(category=category)
+    templates = query.order_by(ScreenerTemplate.usage_count.desc()).limit(50).all()
+    return templates
 
 
 # ============================================================================

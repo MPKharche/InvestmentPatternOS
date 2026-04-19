@@ -800,3 +800,101 @@ class ScreenerRun(Base):
     )  # queued|running|completed|failed
 
     screener = relationship("ScreenerCriteria", back_populates="runs")
+
+
+class ScreenerTemplate(Base):
+    """Pre-defined screener rule templates for one-click setup."""
+
+    __tablename__ = "screener_templates"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    name = Column(String(100), nullable=False, unique=True)
+    description = Column(Text)
+    category = Column(
+        String(50), nullable=False
+    )  # "technical", "fundamental", "momentum", "value", etc.
+    asset_class = Column(String(30), default="equity")
+    rules_json = Column(
+        JSONB, nullable=False
+    )  # { "logic": "AND", "conditions": [...] }
+    tags = Column(JSONB)  # e.g. ["oscillator", "trend", "volatility"]
+    is_active = Column(Boolean, nullable=False, default=True)
+    usage_count = Column(Integer, default=0)  # how many times template was used
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+# ==============================================================================
+# Stress Testing (Feature 3)
+# ==============================================================================
+
+
+class PortfolioSnapshot(Base):
+    """User-uploaded portfolio positions for stress-testing."""
+
+    __tablename__ = "portfolio_snapshots"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    user_id = Column(String(100), nullable=True)  # optional multi-user support
+    name = Column(String(200), nullable=False)  # e.g. "My Tech Portfolio"
+    positions_json = Column(
+        JSONB, nullable=False
+    )  # [{"symbol": "RELIANCE", "qty": 100, "avg_price": 2500}, ...]
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class StressTestRun(Base):
+    """Historical stress-test run on a portfolio."""
+
+    __tablename__ = "stress_test_runs"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    portfolio_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("portfolio_snapshots.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    scenario = Column(
+        String(50), nullable=False
+    )  # "2008_crisis", "2020_covid", "2022_inflation", "custom"
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    initial_value = Column(Float, nullable=False)
+    final_value = Column(Float)
+    max_drawdown_pct = Column(Float)  # portfolio max drawdown during period
+    var_95 = Column(Float)  # Value at Risk (5th percentile)
+    beta_weighted = Column(Float)  # portfolio beta vs NIFTY
+    results_json = Column(JSONB)  # per-symbol P&L breakdown
+    status = Column(
+        String(20), nullable=False, default="queued"
+    )  # queued|running|completed|failed
+    error_message = Column(Text)
+    triggered_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    completed_at = Column(DateTime(timezone=True))
+
+    portfolio = relationship("PortfolioSnapshot", backref="stress_runs")
+
+
+class ScreenerTemplate(Base):
+    """Pre-defined screener rule templates for one-click setup."""
+
+    __tablename__ = "screener_templates"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    name = Column(String(100), nullable=False, unique=True)
+    description = Column(Text)
+    category = Column(
+        String(50), nullable=False
+    )  # "technical", "fundamental", "momentum", "value", etc.
+    asset_class = Column(String(30), default="equity")
+    rules_json = Column(
+        JSONB, nullable=False
+    )  # { "logic": "AND", "conditions": [...] }
+    tags = Column(JSONB)  # e.g. ["oscillator", "trend", "volatility"]
+    is_active = Column(Boolean, nullable=False, default=True)
+    usage_count = Column(Integer, default=0)  # how many times template was used
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )

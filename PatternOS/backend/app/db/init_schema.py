@@ -49,6 +49,9 @@ from app.db.models import (
     ScreenerCriteria,
     ScreenerResult,
     ScreenerRun,
+    ScreenerTemplate,
+    PortfolioSnapshot,
+    StressTestRun,
 )
 
 

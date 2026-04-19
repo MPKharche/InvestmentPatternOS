@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { screenerApi, type Screener, type ScreenerRules, type ScreenerCondition } from "@/lib/api";
+import { screenerApi, type Screener, type ScreenerRules, type ScreenerCondition, type ScreenerTemplate } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { Plus, Trash2, Save, ArrowLeft, GripVertical } from "lucide-react";
+import { Plus, Trash2, Save, ArrowLeft, GripVertical, Sparkles } from "lucide-react";
 
 const FIELD_OPTIONS = [
   { value: "rsi", label: "RSI (14)" },
@@ -59,6 +59,10 @@ export default function ScreenerBuilderPage() {
     { field: "rsi", operator: "<", value: 30 }
   ]);
 
+  const [presets, setPresets] = useState<ScreenerTemplate[]>([]);
+  const [presetsLoading, setPresetsLoading] = useState(false);
+  const [presetCategory, setPresetCategory] = useState<string>("all");
+
   const [saving, setSaving] = useState(false);
 
   // Load existing screener if editing
@@ -75,6 +79,15 @@ export default function ScreenerBuilderPage() {
       }).catch(() => toast.error("Failed to load screener"));
     }
   }, [editId]);
+
+  // Load presets
+  useEffect(() => {
+    setPresetsLoading(true);
+    screenerApi.getPresets(presetCategory !== "all" ? presetCategory : undefined)
+      .then(setPresets)
+      .catch(() => toast.error("Failed to load presets"))
+      .finally(() => setPresetsLoading(false));
+  }, [presetCategory]);
 
   const addCondition = () => {
     setConditions([...conditions, { field: "rsi", operator: "<", value: 30 }]);
@@ -181,6 +194,69 @@ export default function ScreenerBuilderPage() {
             <div>
               <Label>Custom Symbols (comma-separated)</Label>
               <Textarea value={customSymbols} onChange={e => setCustomSymbols(e.target.value)} placeholder="RELIANCE, TCS, INFY" rows={2} />
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Preset Templates */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Sparkles className="h-4 w-4" />
+            Start from a Template
+          </CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Pick a pre-built rule set to get started quickly.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-2 mb-3">
+            <Select value={presetCategory} onValueChange={setPresetCategory}>
+              <SelectTrigger className="w-36">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Categories</SelectItem>
+                <SelectItem value="technical">Technical</SelectItem>
+                <SelectItem value="fundamental">Fundamental</SelectItem>
+                <SelectItem value="momentum">Momentum</SelectItem>
+                <SelectItem value="value">Value</SelectItem>
+                <SelectItem value="oscillator">Oscillator</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {presetsLoading ? (
+            <div className="text-sm text-muted-foreground">Loading templates...</div>
+          ) : presets.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No templates available for this category.</div>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {presets.map((tpl) => (
+                <div
+                  key={tpl.id}
+                  className="p-3 border rounded-md bg-muted/20 hover:bg-muted/40 cursor-pointer transition-colors"
+                  onClick={() => {
+                    setLogic(tpl.rules_json.logic as "AND" | "OR");
+                    setConditions(tpl.rules_json.conditions as ScreenerCondition[]);
+                    toast.success(`Applied template: ${tpl.name}`);
+                  }}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-sm">{tpl.name}</span>
+                    {tpl.tags && tpl.tags.length > 0 && (
+                      <Badge variant="outline" className="text-[9px]">{tpl.tags[0]}</Badge>
+                    )}
+                  </div>
+                  {tpl.description && (
+                    <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{tpl.description}</p>
+                  )}
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    {tpl.rules_json.conditions.length} conditions · {tpl.category}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </CardContent>
