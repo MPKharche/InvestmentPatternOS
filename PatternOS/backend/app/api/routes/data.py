@@ -15,7 +15,9 @@ from app.data.nsepy_client import (
     fetch_fno_contracts,
     get_quote,
 )
+from app.scanner.indicators import compute_indicators
 import pandas as pd
+import math
 
 router = APIRouter(prefix="/data", tags=["data"])
 
@@ -165,3 +167,141 @@ def get_option_chain(
         return {"symbol": symbol, "contracts": contracts}
     except Exception as e:
         raise HTTPException(500, f"Failed to fetch option chain: {str(e)}")
+
+
+@router.get("/stock/{symbol}/indicators")
+def get_stock_indicators(
+    symbol: str,
+    timeframe: str = Query("1d", regex="^(1d|1h|1wk|1mo|1w|1m)$"),
+    days: int = Query(120, ge=10, le=2000),
+    exchange: str = Query("NSE", regex="^(NSE|BSE|NASDAQ|NYSE)$"),
+    indicators: str = Query(
+        "all", description="comma-separated: sma,ema,rsi,macd,bb,atr,stoch,adx,obv"
+    ),
+    rsi_period: int = Query(14, ge=2, le=50),
+    sma_periods: str = Query("20,50,200", description="comma-separated SMA periods"),
+    macd_fast: int = Query(12, ge=2, le=50),
+    macd_slow: int = Query(26, ge=2, le=50),
+    macd_signal: int = Query(9, ge=2, le=50),
+    bb_window: int = Query(20, ge=2, le=50),
+    bb_std: float = Query(2.0, ge=0.1, le=5.0),
+    atr_period: int = Query(14, ge=2, le=50),
+):
+    """
+    Fetch price history + technical indicators with custom parameters.
+    Returns price bars and separate indicator series aligned to dates.
+    """
+    # Fetch price data
+    df = fetch_stock_prices(symbol, timeframe, days, exchange, use_cache=True)
+    if df.empty:
+        raise HTTPException(404, f"No price data found for {symbol}")
+
+    # Parse SMA periods
+    sma_list = tuple(
+        int(p.strip()) for p in sma_periods.split(",") if p.strip().isdigit()
+    )
+
+    # Compute indicators with custom params
+    idf = compute_indicators(
+        df,
+        rsi_period=rsi_period,
+        sma_periods=sma_list if sma_list else (20, 50, 200),
+        macd_fast=macd_fast,
+        macd_slow=macd_slow,
+        macd_signal=macd_signal,
+        bb_window=bb_window,
+        bb_std=bb_std,
+        atr_period=atr_period,
+    )
+
+    # Build price data
+    price_data = []
+    for date_idx, row in idf.iterrows():
+        price_data.append(
+            {
+                "date": date_idx.strftime("%Y-%m-%d")
+                if hasattr(date_idx, "strftime")
+                else str(date_idx),
+                "open": round(float(row["Open"]), 2),
+                "high": round(float(row["High"]), 2),
+                "low": round(float(row["Low"]), 2),
+                "close": round(float(row["Close"]), 2),
+                "volume": int(row["Volume"]),
+            }
+        )
+
+    # Helper: convert to JSON-safe float
+    def _to_float(x):
+        try:
+            f = float(x)
+            if math.isnan(f) or math.isinf(f):
+                return None
+            return round(f, 4)
+        except:
+            return None
+
+    # Determine which indicator columns to include
+    indicator_columns = [
+        "ema_20",
+        "ema_50",
+        "ema_200",
+        "sma_20",
+        "sma_50",
+        "sma_200",
+        "bb_upper",
+        "bb_mid",
+        "bb_lower",
+        "bb_width",
+        "rsi",
+        "macd",
+        "macd_signal",
+        "macd_hist",
+        "atr",
+        "stoch_k",
+        "stoch_d",
+        "adx",
+        "adx_di_pos",
+        "adx_di_neg",
+        "obv",
+    ]
+    # Filter based on `indicators` param unless "all"
+    requested = set()
+    if indicators == "all":
+        requested = set(indicator_columns)
+    else:
+        tokens = {t.strip().lower() for t in indicators.split(",") if t.strip()}
+        if "sma" in tokens:
+            requested.update(f"sma_{p}" for p in sma_list)
+        if "ema" in tokens:
+            requested.update(["ema_20", "ema_50", "ema_200"])
+        if "bb" in tokens:
+            requested.update(["bb_upper", "bb_mid", "bb_lower", "bb_width"])
+        if "macd" in tokens:
+            requested.update(["macd", "macd_signal", "macd_hist"])
+        if "stoch" in tokens:
+            requested.update(["stoch_k", "stoch_d"])
+        if "adx" in tokens:
+            requested.update(["adx", "adx_di_pos", "adx_di_neg"])
+        # direct passes
+        direct = {"rsi", "atr", "obv"}.intersection(tokens)
+        requested.update(direct)
+        # Also handle individual names like "rsi", "atr"
+        for t in tokens:
+            if t in {"rsi", "atr", "obv"}:
+                requested.add(t)
+
+    # Build indicators dict
+    indicators_dict: dict[str, list[float | None]] = {}
+    for col in indicator_columns:
+        if col in requested and col in idf.columns:
+            indicators_dict[col] = [
+                _to_float(idf[col].iloc[i]) for i in range(len(idf))
+            ]
+
+    return {
+        "symbol": symbol.upper(),
+        "exchange": exchange,
+        "timeframe": timeframe,
+        "prices": price_data,
+        "indicators": indicators_dict,
+    }

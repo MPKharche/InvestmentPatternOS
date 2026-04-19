@@ -1,4 +1,5 @@
 """Pydantic request/response schemas for all API routes."""
+
 from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Optional
@@ -6,6 +7,7 @@ from pydantic import BaseModel, Field
 
 
 # ─── Universe ────────────────────────────────────────────────────────────────
+
 
 class UniverseItem(BaseModel):
     id: str
@@ -31,6 +33,7 @@ class UniverseCreate(BaseModel):
 
 
 # ─── Patterns ────────────────────────────────────────────────────────────────
+
 
 class PatternSummary(BaseModel):
     id: str
@@ -74,8 +77,9 @@ class PatternVersionCreate(BaseModel):
 
 # ─── Pattern Studio chat ──────────────────────────────────────────────────────
 
+
 class ChatMessage(BaseModel):
-    role: str          # user | assistant
+    role: str  # user | assistant
     content: str
     created_at: Optional[datetime] = None
 
@@ -84,7 +88,7 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    pattern_id: Optional[str] = None   # None for first turn (new pattern)
+    pattern_id: Optional[str] = None  # None for first turn (new pattern)
     message: str
 
 
@@ -96,6 +100,7 @@ class ChatResponse(BaseModel):
 
 class StudyApplyPatchesRequest(BaseModel):
     """Merge partial rulebook fragments (from study suggestions) into current version."""
+
     patches: list[dict[str, Any]] = Field(default_factory=list)
     change_summary: str = "Applied study patches"
 
@@ -147,6 +152,7 @@ class PatternCandidateOut(BaseModel):
 
 # ─── Signals ─────────────────────────────────────────────────────────────────
 
+
 class SignalOut(BaseModel):
     id: str
     pattern_id: str
@@ -184,8 +190,11 @@ class TelegramFeedbackIn(BaseModel):
 
 # ─── Outcomes ────────────────────────────────────────────────────────────────
 
+
 class OutcomeCreate(BaseModel):
-    result: str = Field(..., pattern="^(hit_target|stopped_out|partial|open|cancelled)$")
+    result: str = Field(
+        ..., pattern="^(hit_target|stopped_out|partial|open|cancelled)$"
+    )
     exit_price: Optional[float] = None
     pnl_pct: Optional[float] = None
     notes: Optional[str] = None
@@ -208,6 +217,7 @@ class OutcomeOut(BaseModel):
 
 # ─── Analytics ───────────────────────────────────────────────────────────────
 
+
 class PatternStats(BaseModel):
     pattern_id: str
     pattern_name: str
@@ -222,10 +232,13 @@ class PatternStats(BaseModel):
 
 # ─── Scanner ─────────────────────────────────────────────────────────────────
 
+
 class ScanRequest(BaseModel):
-    pattern_id: Optional[str] = None   # None = run all active patterns
+    pattern_id: Optional[str] = None  # None = run all active patterns
     symbols: Optional[list[str]] = None  # None = full universe
-    scope: Optional[str] = "nifty50"  # "full", "nifty50", or "custom"; if custom, use symbols list
+    scope: Optional[str] = (
+        "nifty50"  # "full", "nifty50", or "custom"; if custom, use symbols list
+    )
 
 
 class ScanResult(BaseModel):
@@ -235,6 +248,7 @@ class ScanResult(BaseModel):
 
 
 # ─── Learning log ────────────────────────────────────────────────────────────
+
 
 class LearningLogOut(BaseModel):
     id: str
@@ -417,3 +431,74 @@ class MFProviderStateOut(BaseModel):
 class MFProviderPauseRequest(BaseModel):
     minutes: int = 60
     reason: Optional[str] = None
+
+
+# ─── Backtest Repository (Feature 2) ──────────────────────────────────────────
+
+
+class BacktestRunDetail(BaseModel):
+    """Detailed view of a single backtest run."""
+
+    id: str
+    pattern_id: str
+    version_num: int
+    engine: Optional[str] = "internal"
+    symbols_scanned: int
+    events_found: int
+    success_count: int
+    failure_count: int
+    neutral_count: int
+    success_rate: Optional[float]
+    avg_ret_5d: Optional[float]
+    avg_ret_10d: Optional[float]
+    avg_ret_20d: Optional[float]
+    stats_json: Optional[dict[str, Any]]
+    params_json: Optional[dict[str, Any]]
+    notes: Optional[str]
+    tags: Optional[list[str]]
+    status: str
+    error_message: Optional[str]
+    started_at: Optional[datetime]
+    completed_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class BacktestRunSummary(BaseModel):
+    """Compact representation for runs table."""
+
+    id: str
+    version_num: int
+    status: str
+    engine: Optional[str]
+    symbols_scanned: int
+    events_found: int
+    success_rate: Optional[float]
+    avg_ret_20d: Optional[float]
+    started_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    tags: Optional[list[str]]
+
+
+class CompareRunsRequest(BaseModel):
+    """Request body for comparing multiple backtest runs."""
+
+    run_ids: list[str]
+
+
+class MetricDelta(BaseModel):
+    metric: str
+    baseline: Optional[float]
+    comparison: Optional[float]
+    delta: Optional[float]
+    delta_pct: Optional[float]
+
+
+class CompareRunsResponse(BaseModel):
+    """Side-by-side comparison of runs + delta analysis."""
+
+    runs: list[BacktestRunDetail]
+    metrics: list[MetricDelta]
+    improved_metrics: list[str]
+    degraded_metrics: list[str]

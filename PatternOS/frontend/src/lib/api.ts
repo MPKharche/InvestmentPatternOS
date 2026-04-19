@@ -196,8 +196,29 @@ export interface BacktestRun {
   avg_ret_10d: number | null;
   avg_ret_20d: number | null;
   stats_json?: Record<string, unknown> | null;
+  params_json?: Record<string, unknown> | null;
+  notes?: string | null;
+  tags?: string[] | null;
+  error_message?: string | null;
   started_at: string;
   completed_at: string | null;
+}
+
+/** Single metric delta between two runs. */
+export interface MetricDelta {
+  metric: string;
+  baseline: number | null;
+  comparison: number | null;
+  delta: number | null;
+  delta_pct: number | null;
+}
+
+/** Comparison response containing multiple runs + metric deltas. */
+export interface CompareRunsResponse {
+  runs: BacktestRun[];
+  metrics: MetricDelta[];
+  improved_metrics: string[];
+  degraded_metrics: string[];
 }
 
 /** LLM-estimated deltas vs current backtest (percentage points where noted). */
@@ -341,6 +362,13 @@ export const studioApi = {
   },
   getBacktestRuns: (patternId: string) =>
     request<BacktestRun[]>(`/studio/${patternId}/backtest/runs`),
+  getBacktestRunDetail: (patternId: string, runId: string) =>
+    request<BacktestRun>(`/studio/${patternId}/backtest/runs/${runId}`),
+  compareBacktestRuns: (patternId: string, runIds: string[]) =>
+    request<CompareRunsResponse>(`/studio/${patternId}/backtest/compare`, {
+      method: "POST",
+      body: JSON.stringify({ run_ids: runIds })
+    }),
   getEvents: (
     patternId: string,
     params?: {
@@ -495,6 +523,14 @@ export interface OptionChainResponse {
   contracts: OptionContract[];
 }
 
+export interface StockIndicatorsResponse {
+  symbol: string;
+  exchange: string;
+  timeframe: string;
+  prices: StockPrice[];
+  indicators: Record<string, Array<number | null>>;
+}
+
 export const dataApi = {
   getStock: (symbol: string, options?: { timeframe?: string; days?: number; exchange?: string; includeFundamentals?: boolean }) => {
     const params = new URLSearchParams();
@@ -503,6 +539,35 @@ export const dataApi = {
     if (options?.exchange) params.set("exchange", options.exchange);
     if (options?.includeFundamentals !== undefined) params.set("include_fundamentals", String(options.includeFundamentals));
     return request<StockDataResponse>(`/data/stock/${encodeURIComponent(symbol)}?${params}`);
+  },
+  getStockIndicators: (symbol: string, options?: {
+    timeframe?: string;
+    days?: number;
+    exchange?: string;
+    indicators?: string;           // "all" or csv
+    rsiPeriod?: number;
+    smaPeriods?: string;           // "20,50,200"
+    macdFast?: number;
+    macdSlow?: number;
+    macdSignal?: number;
+    bbWindow?: number;
+    bbStd?: number;
+    atrPeriod?: number;
+  }) => {
+    const params = new URLSearchParams();
+    if (options?.timeframe) params.set("timeframe", options.timeframe);
+    if (options?.days) params.set("days", String(options.days));
+    if (options?.exchange) params.set("exchange", options.exchange);
+    if (options?.indicators) params.set("indicators", options.indicators);
+    if (options?.rsiPeriod) params.set("rsi_period", String(options.rsiPeriod));
+    if (options?.smaPeriods) params.set("sma_periods", options.smaPeriods);
+    if (options?.macdFast) params.set("macd_fast", String(options.macdFast));
+    if (options?.macdSlow) params.set("macd_slow", String(options.macdSlow));
+    if (options?.macdSignal) params.set("macd_signal", String(options.macdSignal));
+    if (options?.bbWindow) params.set("bb_window", String(options.bbWindow));
+    if (options?.bbStd) params.set("bb_std", String(options.bbStd));
+    if (options?.atrPeriod) params.set("atr_period", String(options.atrPeriod));
+    return request<StockIndicatorsResponse>(`/data/stock/${encodeURIComponent(symbol)}/indicators?${params}`);
   },
   getIndex: (indexName: string, options?: { timeframe?: string; days?: number }) => {
     const params = new URLSearchParams();

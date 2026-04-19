@@ -147,6 +147,77 @@ def _extract_sector(data, i):
     return data.get("sector") if isinstance(data, dict) else None
 
 
+@register_field("atr")
+def _extract_atr(data, i):
+    if isinstance(data, dict):
+        return data.get("atr")
+    return float(data["atr"].iloc[i]) if "atr" in data.columns else None
+
+
+@register_field("stoch_k")
+def _extract_stoch_k(data, i):
+    if isinstance(data, dict):
+        return data.get("stoch_k")
+    return float(data["stoch_k"].iloc[i]) if "stoch_k" in data.columns else None
+
+
+@register_field("stoch_d")
+def _extract_stoch_d(data, i):
+    if isinstance(data, dict):
+        return data.get("stoch_d")
+    return float(data["stoch_d"].iloc[i]) if "stoch_d" in data.columns else None
+
+
+@register_field("adx")
+def _extract_adx(data, i):
+    if isinstance(data, dict):
+        return data.get("adx")
+    return float(data["adx"].iloc[i]) if "adx" in data.columns else None
+
+
+@register_field("obv")
+def _extract_obv(data, i):
+    if isinstance(data, dict):
+        return data.get("obv")
+    return float(data["obv"].iloc[i]) if "obv" in data.columns else None
+
+
+@register_field("bb_upper")
+def _extract_bb_upper(data, i):
+    if isinstance(data, dict):
+        return data.get("bb_upper")
+    return float(data["bb_upper"].iloc[i]) if "bb_upper" in data.columns else None
+
+
+@register_field("bb_lower")
+def _extract_bb_lower(data, i):
+    if isinstance(data, dict):
+        return data.get("bb_lower")
+    return float(data["bb_lower"].iloc[i]) if "bb_lower" in data.columns else None
+
+
+@register_field("bb_width")
+def _extract_bb_width(data, i):
+    if isinstance(data, dict):
+        return data.get("bb_width")
+    return float(data["bb_width"].iloc[i]) if "bb_width" in data.columns else None
+
+
+@register_field("close_vs_sma")
+def _extract_close_vs_sma(data, i):
+    """Calculate close vs SMA 20 percentage difference."""
+    if isinstance(data, dict):
+        close = data.get("close")
+        sma_20 = data.get("sma_20")
+    else:
+        close = float(data["Close"].iloc[i]) if "Close" in data.columns else None
+        sma_20 = float(data["sma_20"].iloc[i]) if "sma_20" in data.columns else None
+    
+    if close is not None and sma_20 is not None and sma_20 != 0:
+        return ((close - sma_20) / sma_20) * 100
+    return None
+
+
 # Pattern flag extractors (require computed indicators DataFrame)
 @register_field("macd_divergence_bullish")
 def _extract_macd_divergence_bullish(data, i):

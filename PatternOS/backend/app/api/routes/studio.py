@@ -1,13 +1,40 @@
 """Pattern Studio — chat, file-upload, backtest and study endpoints."""
+
 from typing import Annotated, Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Body
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    UploadFile,
+    File,
+    Form,
+    Query,
+    Body,
+)
 from sqlalchemy.orm import Session
 from app.db.session import get_db
-from app.db.models import Pattern, PatternChat, PatternVersion, PatternEvent, BacktestRun, PatternStudy, PatternCandidate
+from app.db.models import (
+    Pattern,
+    PatternChat,
+    PatternVersion,
+    PatternEvent,
+    BacktestRun,
+    PatternStudy,
+    PatternCandidate,
+)
 from app.api.schemas import (
-    ChatRequest, ChatResponse, ChatMessage,
-    PatternCandidateCreate, PatternCandidateOut, PatternCandidateUpdate,
+    ChatRequest,
+    ChatResponse,
+    ChatMessage,
+    PatternCandidateCreate,
+    PatternCandidateOut,
+    PatternCandidateUpdate,
     StudyApplyPatchesRequest,
+    BacktestRunDetail,
+    BacktestRunSummary,
+    CompareRunsRequest,
+    CompareRunsResponse,
+    MetricDelta,
 )
 from app.utils.deep_merge import deep_merge
 from app.llm.studio import run_studio_chat
@@ -16,7 +43,18 @@ from app.utils.file_processor import process_file
 router = APIRouter(prefix="/studio", tags=["studio"])
 
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB per upload
-ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".pdf", ".docx", ".doc", ".txt", ".md"}
+ALLOWED_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".gif",
+    ".pdf",
+    ".docx",
+    ".doc",
+    ".txt",
+    ".md",
+}
 
 
 @router.post("/candidates", response_model=PatternCandidateOut)
@@ -55,7 +93,9 @@ def get_candidate(candidate_id: str, db: Session = Depends(get_db)):
 
 
 @router.patch("/candidates/{candidate_id}", response_model=PatternCandidateOut)
-def update_candidate(candidate_id: str, body: PatternCandidateUpdate, db: Session = Depends(get_db)):
+def update_candidate(
+    candidate_id: str, body: PatternCandidateUpdate, db: Session = Depends(get_db)
+):
     c = db.query(PatternCandidate).filter_by(id=candidate_id).first()
     if not c:
         raise HTTPException(404, "Candidate not found")
@@ -81,7 +121,11 @@ def finalize_candidate(candidate_id: str, db: Session = Depends(get_db)):
     if not c:
         raise HTTPException(404, "Candidate not found")
     if c.linked_pattern_id:
-        return {"ok": True, "pattern_id": c.linked_pattern_id, "message": "Candidate already finalized"}
+        return {
+            "ok": True,
+            "pattern_id": c.linked_pattern_id,
+            "message": "Candidate already finalized",
+        }
     if not _draft_rules_nonempty(c.draft_rules_json):
         raise HTTPException(
             400,
@@ -153,6 +197,7 @@ def _load_history(pattern_id: str, db: Session) -> list[dict]:
 
 # ─── Text-only chat ───────────────────────────────────────────────────────────
 
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat_text(body: ChatRequest, db: Session = Depends(get_db)):
     """Standard text chat — no file attachments."""
@@ -177,6 +222,7 @@ async def chat_text(body: ChatRequest, db: Session = Depends(get_db)):
 
 # ─── File + message chat ──────────────────────────────────────────────────────
 
+
 @router.post("/chat-with-files", response_model=ChatResponse)
 async def chat_with_files(
     message: Annotated[str, Form(...)],
@@ -200,9 +246,13 @@ async def chat_with_files(
     file_labels = []
     for f in files[:5]:  # max 5 files per message
         from pathlib import Path
+
         ext = Path(f.filename or "").suffix.lower()
         if ext not in ALLOWED_EXTENSIONS:
-            raise HTTPException(400, f"Unsupported file type: {f.filename}. Allowed: {', '.join(ALLOWED_EXTENSIONS)}")
+            raise HTTPException(
+                400,
+                f"Unsupported file type: {f.filename}. Allowed: {', '.join(ALLOWED_EXTENSIONS)}",
+            )
         data = await f.read()
         if len(data) > MAX_FILE_SIZE:
             raise HTTPException(400, f"File {f.filename} exceeds 20 MB limit.")
@@ -234,6 +284,7 @@ async def chat_with_files(
 
 # ─── Chat history ─────────────────────────────────────────────────────────────
 
+
 @router.get("/{pattern_id}/history", response_model=list[ChatMessage])
 def get_history(pattern_id: str, db: Session = Depends(get_db)):
     return (
@@ -246,12 +297,13 @@ def get_history(pattern_id: str, db: Session = Depends(get_db)):
 
 # ─── Backtest endpoints ───────────────────────────────────────────────────────
 
+
 @router.post("/{pattern_id}/backtest")
 async def start_backtest(
     pattern_id: str,
     engine: str = Query("internal"),
     body: dict = Body(default={}),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Start a backtest run in a thread pool so the event loop stays responsive."""
     import asyncio
@@ -286,7 +338,9 @@ async def start_backtest(
         thread_db = SessionLocal()
         try:
             if engine_norm == "vectorbt":
-                return run_backtest_vectorbt(pattern_id, thread_db, scope=scope, symbols=symbol_list)
+                return run_backtest_vectorbt(
+                    pattern_id, thread_db, scope=scope, symbols=symbol_list
+                )
             return run_backtest(pattern_id, thread_db, scope=scope, symbols=symbol_list)
         finally:
             thread_db.close()
@@ -298,7 +352,7 @@ async def start_backtest(
         raise HTTPException(500, str(e))
 
 
-@router.get("/{pattern_id}/backtest/runs")
+@router.get("/{pattern_id}/backtest/runs", response_model=list[BacktestRunDetail])
 def list_backtest_runs(pattern_id: str, db: Session = Depends(get_db)):
     runs = (
         db.query(BacktestRun)
@@ -308,18 +362,159 @@ def list_backtest_runs(pattern_id: str, db: Session = Depends(get_db)):
         .all()
     )
     return [
-        {
-            "id": r.id, "version_num": r.version_num, "status": r.status, "engine": getattr(r, "engine", "internal"),
-            "symbols_scanned": r.symbols_scanned, "events_found": r.events_found,
-            "success_count": r.success_count, "failure_count": r.failure_count,
-            "neutral_count": r.neutral_count, "success_rate": r.success_rate,
-            "avg_ret_5d": r.avg_ret_5d, "avg_ret_10d": r.avg_ret_10d, "avg_ret_20d": r.avg_ret_20d,
-            "stats_json": getattr(r, "stats_json", None),
-            "started_at": r.started_at.isoformat() if r.started_at else None,
-            "completed_at": r.completed_at.isoformat() if r.completed_at else None,
-        }
+        BacktestRunDetail(
+            id=r.id,
+            pattern_id=r.pattern_id,
+            version_num=r.version_num,
+            engine=getattr(r, "engine", "internal"),
+            symbols_scanned=r.symbols_scanned,
+            events_found=r.events_found,
+            success_count=r.success_count,
+            failure_count=r.failure_count,
+            neutral_count=r.neutral_count,
+            success_rate=r.success_rate,
+            avg_ret_5d=r.avg_ret_5d,
+            avg_ret_10d=r.avg_ret_10d,
+            avg_ret_20d=r.avg_ret_20d,
+            stats_json=r.stats_json,
+            params_json=r.params_json,
+            notes=r.notes,
+            tags=r.tags if r.tags else None,
+            status=r.status,
+            error_message=r.error_message,
+            started_at=r.started_at,
+            completed_at=r.completed_at,
+        )
         for r in runs
     ]
+
+
+@router.get("/{pattern_id}/backtest/runs/{run_id}", response_model=BacktestRunDetail)
+def get_backtest_run(pattern_id: str, run_id: str, db: Session = Depends(get_db)):
+    """Get detailed information for a single backtest run."""
+    run = db.query(BacktestRun).filter_by(pattern_id=pattern_id, id=run_id).first()
+    if not run:
+        raise HTTPException(404, "Backtest run not found")
+
+    return BacktestRunDetail(
+        id=run.id,
+        pattern_id=run.pattern_id,
+        version_num=run.version_num,
+        engine=getattr(run, "engine", "internal"),
+        symbols_scanned=run.symbols_scanned,
+        events_found=run.events_found,
+        success_count=run.success_count,
+        failure_count=run.failure_count,
+        neutral_count=run.neutral_count,
+        success_rate=run.success_rate,
+        avg_ret_5d=run.avg_ret_5d,
+        avg_ret_10d=run.avg_ret_10d,
+        avg_ret_20d=run.avg_ret_20d,
+        stats_json=run.stats_json,
+        params_json=run.params_json,
+        notes=run.notes,
+        tags=run.tags if run.tags else None,
+        status=run.status,
+        error_message=run.error_message,
+        started_at=run.started_at,
+        completed_at=run.completed_at,
+    )
+
+
+@router.post("/{pattern_id}/backtest/compare", response_model=CompareRunsResponse)
+def compare_backtest_runs(
+    pattern_id: str,
+    body: CompareRunsRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Compare multiple backtest runs side-by-side.
+    Returns run details + metric deltas (baseline = first run, comparison = others).
+    """
+    if len(body.run_ids) < 2:
+        raise HTTPException(400, "At least 2 run_ids required for comparison")
+
+    runs = []
+    for rid in body.run_ids:
+        r = db.query(BacktestRun).filter_by(pattern_id=pattern_id, id=rid).first()
+        if not r:
+            raise HTTPException(404, f"Run {rid} not found")
+        runs.append(r)
+
+    baseline = runs[0]
+    metrics = []
+
+    # Metric keys to compare (name, baseline attr, comparison attr)
+    metric_map = [
+        ("events_found", "events_found"),
+        ("success_rate", "success_rate"),
+        ("avg_ret_5d", "avg_ret_5d"),
+        ("avg_ret_10d", "avg_ret_10d"),
+        ("avg_ret_20d", "avg_ret_20d"),
+    ]
+
+    improved = []
+    degraded = []
+
+    for m_key, attr in metric_map:
+        baseline_val = getattr(baseline, attr)
+        for idx in range(1, len(runs)):
+            comp_val = getattr(runs[idx], attr)
+            delta = None
+            delta_pct = None
+            if baseline_val is not None and comp_val is not None:
+                delta = comp_val - baseline_val
+                if baseline_val != 0:
+                    delta_pct = (delta / abs(baseline_val)) * 100
+
+                # Determine if improved or degraded
+                # Higher success_rate and avg_ret are better; lower is not considered degraded here
+                if comp_val > baseline_val:
+                    improved.append(m_key)
+                elif comp_val < baseline_val:
+                    degraded.append(m_key)
+
+            metrics.append(
+                MetricDelta(
+                    metric=m_key,
+                    baseline=baseline_val,
+                    comparison=comp_val,
+                    delta=delta,
+                    delta_pct=delta_pct,
+                )
+            )
+
+    return CompareRunsResponse(
+        runs=[
+            BacktestRunDetail(
+                id=r.id,
+                pattern_id=r.pattern_id,
+                version_num=r.version_num,
+                engine=getattr(r, "engine", "internal"),
+                symbols_scanned=r.symbols_scanned,
+                events_found=r.events_found,
+                success_count=r.success_count,
+                failure_count=r.failure_count,
+                neutral_count=r.neutral_count,
+                success_rate=r.success_rate,
+                avg_ret_5d=r.avg_ret_5d,
+                avg_ret_10d=r.avg_ret_10d,
+                avg_ret_20d=r.avg_ret_20d,
+                stats_json=r.stats_json,
+                params_json=r.params_json,
+                notes=r.notes,
+                tags=r.tags if r.tags else None,
+                status=r.status,
+                error_message=r.error_message,
+                started_at=r.started_at,
+                completed_at=r.completed_at,
+            )
+            for r in runs
+        ],
+        metrics=metrics,
+        improved_metrics=list(set(improved)),
+        degraded_metrics=list(set(degraded)),
+    )
 
 
 @router.get("/{pattern_id}/events")
@@ -340,22 +535,34 @@ def list_events(
     if outcome:
         q = q.filter(PatternEvent.outcome == outcome)
     total = q.count()
-    events = q.order_by(PatternEvent.detected_at.desc()).offset(offset).limit(limit).all()
+    events = (
+        q.order_by(PatternEvent.detected_at.desc()).offset(offset).limit(limit).all()
+    )
     return {
         "total": total,
         "events": [
             {
-                "id": e.id, "symbol": e.symbol, "timeframe": e.timeframe,
-                "detected_at": e.detected_at, "entry_price": e.entry_price,
+                "id": e.id,
+                "symbol": e.symbol,
+                "timeframe": e.timeframe,
+                "detected_at": e.detected_at,
+                "entry_price": e.entry_price,
                 "backtest_run_id": e.backtest_run_id,
-                "ret_5d": e.ret_5d, "ret_10d": e.ret_10d, "ret_20d": e.ret_20d,
-                "ret_21d": e.ret_21d, "ret_63d": e.ret_63d, "ret_126d": e.ret_126d,
-                "max_gain_20d": e.max_gain_20d, "max_loss_20d": e.max_loss_20d,
-                "outcome": e.outcome, "indicator_snapshot": e.indicator_snapshot,
-                "user_feedback": e.user_feedback, "user_notes": e.user_notes,
+                "ret_5d": e.ret_5d,
+                "ret_10d": e.ret_10d,
+                "ret_20d": e.ret_20d,
+                "ret_21d": e.ret_21d,
+                "ret_63d": e.ret_63d,
+                "ret_126d": e.ret_126d,
+                "max_gain_20d": e.max_gain_20d,
+                "max_loss_20d": e.max_loss_20d,
+                "outcome": e.outcome,
+                "indicator_snapshot": e.indicator_snapshot,
+                "user_feedback": e.user_feedback,
+                "user_notes": e.user_notes,
             }
             for e in events
-        ]
+        ],
     }
 
 
@@ -371,7 +578,9 @@ def update_event_feedback(event_id: str, body: dict, db: Session = Depends(get_d
 
 
 @router.post("/{pattern_id}/study/apply-patches")
-def apply_study_patches(pattern_id: str, body: StudyApplyPatchesRequest, db: Session = Depends(get_db)):
+def apply_study_patches(
+    pattern_id: str, body: StudyApplyPatchesRequest, db: Session = Depends(get_db)
+):
     """
     Deep-merge each patch dict into the active rulebook and create a new PatternVersion.
     Use suggestion.apply_patch values from the study JSON (or any partial rulebook fragments).
@@ -429,24 +638,37 @@ async def generate_study(pattern_id: str, db: Session = Depends(get_db)):
         .first()
     )
     if not run:
-        raise HTTPException(400, "No completed backtest run found. Run a backtest first.")
+        raise HTTPException(
+            400, "No completed backtest run found. Run a backtest first."
+        )
 
     events = db.query(PatternEvent).filter_by(backtest_run_id=run.id).limit(100).all()
     sample = [
         {
-            "symbol": e.symbol, "detected_at": e.detected_at, "outcome": e.outcome,
-            "ret_5d": e.ret_5d, "ret_10d": e.ret_10d, "ret_20d": e.ret_20d,
-            "ret_21d": e.ret_21d, "ret_63d": e.ret_63d, "ret_126d": e.ret_126d,
+            "symbol": e.symbol,
+            "detected_at": e.detected_at,
+            "outcome": e.outcome,
+            "ret_5d": e.ret_5d,
+            "ret_10d": e.ret_10d,
+            "ret_20d": e.ret_20d,
+            "ret_21d": e.ret_21d,
+            "ret_63d": e.ret_63d,
+            "ret_126d": e.ret_126d,
             "indicators": e.indicator_snapshot,
         }
         for e in events
     ]
 
     run_stats = {
-        "symbols_scanned": run.symbols_scanned, "events_found": run.events_found,
-        "success_count": run.success_count, "failure_count": run.failure_count,
-        "neutral_count": run.neutral_count, "success_rate": run.success_rate,
-        "avg_ret_5d": run.avg_ret_5d, "avg_ret_10d": run.avg_ret_10d, "avg_ret_20d": run.avg_ret_20d,
+        "symbols_scanned": run.symbols_scanned,
+        "events_found": run.events_found,
+        "success_count": run.success_count,
+        "failure_count": run.failure_count,
+        "neutral_count": run.neutral_count,
+        "success_rate": run.success_rate,
+        "avg_ret_5d": run.avg_ret_5d,
+        "avg_ret_10d": run.avg_ret_10d,
+        "avg_ret_20d": run.avg_ret_20d,
     }
     all_run_ev = db.query(PatternEvent).filter_by(backtest_run_id=run.id).all()
 

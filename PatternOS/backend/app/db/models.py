@@ -255,6 +255,11 @@ class BacktestRun(Base):
     avg_ret_10d = Column(Float)
     avg_ret_20d = Column(Float)
     stats_json = Column(JSONB)
+    params_json = Column(
+        JSONB
+    )  # scan parameters (symbols, scope, dates, pattern_version)
+    notes = Column(Text)  # user annotation
+    tags = Column(JSONB)  # grouping tags e.g. ["production", "experiment"]
     status = Column(String(20), default="running")
     error_message = Column(Text)
     started_at = Column(DateTime(timezone=True), default=datetime.utcnow)
