@@ -311,9 +311,9 @@ export default function ScreenerResultsPage() {
                     <TableCell>
                       <div className="flex items-center gap-2">
                         <div className="w-16 h-2 bg-muted rounded-full overflow-hidden">
-                          <div className="h-full bg-primary" style={{ width: `${Math.min(r.score, 100)}%` }} />
+                          <div className="h-full bg-primary" style={{ width: `${Math.min(r.score || 0, 100)}%` }} />
                         </div>
-                        <span className="text-xs">{r.score?.toFixed(1)}</span>
+                        <span className="text-xs">{r.score?.toFixed(1) ?? "0.0"}</span>
                       </div>
                     </TableCell>
                     <TableCell>{(r.metrics.rsi as number | undefined)?.toFixed(1) ?? "—"}</TableCell>

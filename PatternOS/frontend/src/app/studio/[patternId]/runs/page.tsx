@@ -15,7 +15,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Loader2, Play, Compare } from "lucide-react";
+import { Loader2, Play, GitCompare } from "lucide-react";
 
 export default function BacktestRunsPage() {
   const params = useParams();
@@ -99,7 +99,7 @@ export default function BacktestRunsPage() {
             <Loader2 className={`h-4 w-4 mr-1 ${loading ? "animate-spin" : ""}`} /> Refresh
           </Button>
           <Button onClick={handleCompare} disabled={selectedIds.size < 2}>
-            <Compare className="h-4 w-4 mr-1" /> Compare Selected
+            <GitCompare className="h-4 w-4 mr-1" /> Compare Selected
           </Button>
         </div>
       </div>

@@ -168,6 +168,33 @@ def list_screeners(
     return screeners
 
 
+@router.get("/presets", response_model=List[ScreenerTemplateOut])
+def list_presets(
+    category: Optional[str] = Query(None),
+    asset_class: str = Query("equity", pattern="^(equity|mf)$"),
+    db: Session = Depends(get_db),
+):
+    """
+    List available screener preset templates.
+
+    These are pre-defined rule sets users can instantly apply in the builder.
+
+    Args:
+        category: Filter by category ("technical", "fundamental", "momentum", "value")
+        asset_class: "equity" or "mf"
+
+    Returns:
+        List of templates with name, description, rules_json, tags, usage_count
+    """
+    query = db.query(ScreenerTemplate).filter_by(
+        is_active=True, asset_class=asset_class
+    )
+    if category:
+        query = query.filter_by(category=category)
+    templates = query.order_by(ScreenerTemplate.usage_count.desc()).limit(50).all()
+    return templates
+
+
 @router.get("/{id}", response_model=ScreenerOut)
 def get_screener(id: str, db: Session = Depends(get_db)):
     """Get a single screener by ID."""
@@ -205,38 +232,6 @@ def delete_screener(id: str, db: Session = Depends(get_db)):
     db.delete(screener)
     db.commit()
     return None
-
-
-# ============================================================================
-# Presets / Templates
-# ============================================================================
-
-
-@router.get("/presets", response_model=List[ScreenerTemplateOut])
-def list_presets(
-    category: Optional[str] = Query(None),
-    asset_class: str = Query("equity", pattern="^(equity|mf)$"),
-    db: Session = Depends(get_db),
-):
-    """
-    List available screener preset templates.
-
-    These are pre-defined rule sets users can instantly apply in the builder.
-
-    Args:
-        category: Filter by category ("technical", "fundamental", "momentum", "value")
-        asset_class: "equity" or "mf"
-
-    Returns:
-        List of templates with name, description, rules_json, tags, usage_count
-    """
-    query = db.query(ScreenerTemplate).filter_by(
-        is_active=True, asset_class=asset_class
-    )
-    if category:
-        query = query.filter_by(category=category)
-    templates = query.order_by(ScreenerTemplate.usage_count.desc()).limit(50).all()
-    return templates
 
 
 # ============================================================================

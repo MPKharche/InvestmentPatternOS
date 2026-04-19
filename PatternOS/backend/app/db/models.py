@@ -875,26 +875,3 @@ class StressTestRun(Base):
     completed_at = Column(DateTime(timezone=True))
 
     portfolio = relationship("PortfolioSnapshot", backref="stress_runs")
-
-
-class ScreenerTemplate(Base):
-    """Pre-defined screener rule templates for one-click setup."""
-
-    __tablename__ = "screener_templates"
-    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
-    name = Column(String(100), nullable=False, unique=True)
-    description = Column(Text)
-    category = Column(
-        String(50), nullable=False
-    )  # "technical", "fundamental", "momentum", "value", etc.
-    asset_class = Column(String(30), default="equity")
-    rules_json = Column(
-        JSONB, nullable=False
-    )  # { "logic": "AND", "conditions": [...] }
-    tags = Column(JSONB)  # e.g. ["oscillator", "trend", "volatility"]
-    is_active = Column(Boolean, nullable=False, default=True)
-    usage_count = Column(Integer, default=0)  # how many times template was used
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at = Column(
-        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
-    )
