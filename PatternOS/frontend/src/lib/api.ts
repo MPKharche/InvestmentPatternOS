@@ -10,12 +10,18 @@ const BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api/v1";
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const maxRetries = 3;
   const backoffMs = 1000;
+  const body = options?.body;
+  const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
+  const headers = new Headers(options?.headers);
+  if (!isFormData && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const res = await fetch(`${BASE}${path}`, {
-        headers: { "Content-Type": "application/json" },
         ...options,
+        headers,
       });
 
       if (!res.ok) {
@@ -812,6 +818,96 @@ export const screenerApi = {
     if (category) params.set("category", category);
     return request<ScreenerTemplate[]>(`/screener/presets?${params}`);
   },
+};
+
+// ============================================================================
+// Stress Testing
+// ============================================================================
+
+export interface PositionCreate {
+  symbol: string;
+  qty: number;
+  avg_price: number;
+}
+
+export interface PortfolioCreate {
+  user_id?: string | null;
+  name: string;
+  positions: PositionCreate[];
+}
+
+export interface PortfolioOut {
+  id: string;
+  user_id: string | null;
+  name: string;
+  positions_json: any[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StressTestRequest {
+  scenario: string;
+  start_date?: string | null;
+  end_date?: string | null;
+}
+
+export interface StressTestResult {
+  id: string;
+  portfolio_id: string;
+  scenario: string;
+  status: "queued" | "running" | "completed" | "failed" | string;
+  start_date: string;
+  end_date: string;
+  initial_value: number;
+  final_value: number | null;
+  max_drawdown_pct: number | null;
+  var_95: number | null;
+  beta_weighted: number | null;
+  results_json: any | null;
+  triggered_at: string;
+  completed_at: string | null;
+  error_text?: string | null;
+}
+
+// ============================================================================
+// API
+// ============================================================================
+
+export const stressTestApi = {
+  getScenarios: () => request<Record<string, any>[]>(`/stress-test/scenarios`),
+  getPortfolios: () => request<PortfolioOut[]>(`/stress-test/portfolio`),
+  createPortfolio: (body: PortfolioCreate) =>
+    request<PortfolioOut>(`/stress-test/portfolio`, { method: "POST", body: JSON.stringify(body) }),
+  uploadPortfolioCSV: (file: File, user_id?: string | null, name?: string | null) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (user_id !== null && user_id !== undefined) form.append("user_id", user_id);
+    if (name !== null && name !== undefined) form.append("name", name);
+    return request<PortfolioOut>(`/stress-test/portfolio/upload`, {
+      method: "POST",
+      body: form,
+    });
+  },
+  getPortfolio: (portfolioId: string) =>
+    request<PortfolioOut>(`/stress-test/portfolio/${portfolioId}`),
+  updatePortfolio: (portfolioId: string, body: PortfolioCreate) =>
+    request<PortfolioOut>(`/stress-test/portfolio/${portfolioId}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  deletePortfolio: (portfolioId: string) =>
+    request<void>(`/stress-test/portfolio/${portfolioId}`, { method: "DELETE" }),
+  getPortfolioRuns: (portfolioId: string) =>
+    request<{ id: string; scenario: string; start_date: string; end_date: string; initial_value: number; final_value: number | null; max_drawdown_pct: number | null; triggered_at: string; completed_at: string | null }[]>(
+      `/stress-test/portfolio/${portfolioId}/runs`
+    ),
+  runStressTest: (portfolioId: string, body: StressTestRequest) =>
+    request<StressTestResult>(`/stress-test/run`, {
+      method: "POST",
+      body: JSON.stringify({ portfolio_id: portfolioId, ...body }),
+    }),
+  getStressTestRun: (runId: string) =>
+    request<StressTestResult>(`/stress-test/run/${runId}`),
 };
 
 // ============================================================================
