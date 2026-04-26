@@ -252,5 +252,11 @@ FRESH INSTALL / NEW DEVICE:
 4. Edit .env (API keys), rerun .\dev-up.bat
 5. App ready: http://localhost:3000
 
+PRODUCTION FRONTEND (lower CPU than dev — use on VPS / real users):
+  Windows: run start-frontend-prod.bat (build + next start)
+  Linux/macOS: ./PatternOS/scripts/run-frontend-prod.sh
+  Or from PatternOS/frontend: npm run prod   (same as npm run build && npm run start)
+  Set PORT and NEXT_PUBLIC_API_BASE_URL as needed.
+
 All seed data (universe, patterns, MF NAV history) auto-fetched/loaded from GitHub or committed SQL/JSON.
 Subsequent dev-up refreshes only (no re-seed).
