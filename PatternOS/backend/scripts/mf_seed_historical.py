@@ -2,10 +2,86 @@
 """
 One-time bootstrap: seed historical MF NAV (Parquet) + scheme master (CSV).
 
-Design goals:
-  - Idempotent: mf_nav_daily PK (scheme_code, nav_date) prevents duplicates.
-  - Fast: bulk COPY, no row-by-row inserts.
-  - Safe: seed once, then daily AMFI pipeline continues.
+Primary dataset (Kaggle): https://www.kaggle.com/datasets/tharunreddy2911/mutual-fund-data
+
+Ways to load it
+----------------
+
+1) **Kaggle zip on your machine** (large download + long DB load; exact dataset bits)::
+
+    pip install kaggle
+    # Put API credentials in ~/.kaggle/kaggle.json
+
+    # From the PatternOS repo root (folder that contains ``backend/`` and ``frontend/``):
+    mkdir -p ./data/mf-kaggle
+    kaggle datasets download -d tharunreddy2911/mutual-fund-data -p ./data/mf-kaggle
+    unzip -o ./data/mf-kaggle/mutual-fund-data.zip -d ./data/mf-kaggle
+
+    cd backend
+    ../.venv/bin/python scripts/mf_seed_historical.py --kaggle-dir ../../data/mf-kaggle
+
+   Or set ``MF_KAGGLE_DATA_DIR`` in ``PatternOS/.env`` to the **extracted** folder and run::
+
+    ../.venv/bin/python scripts/mf_seed_historical.py
+
+   Optional: ``--since-date YYYY-MM-DD`` skips older NAV rows while scanning the parquet
+   (smaller test run; scheme CSV still loads unless ``--skip-schemes``).
+
+2) **Public mirror** (same filenames) via HTTPS — defaults in this file; override with
+   ``MF_HISTORICAL_PARQUET_URL`` / ``MF_HISTORICAL_SCHEMES_CSV_URL`` or ``--parquet-path`` / ``--csv-path``.
+
+After a full historical seed
+----------------------------
+
+Realign the priority-AMC equity Direct Growth watchlist and pull the latest NAV day::
+
+    curl -X POST http://127.0.0.1:8000/api/v1/mf/pipeline/watchlist/sync-priority-amc
+    curl -X POST http://127.0.0.1:8000/api/v1/mf/pipeline/nav/run
+
+(Adjust host/port to your API, or use **MF → Pipeline runs** in the app:
+**Sync priority AMC watchlist** then **Run NAV now**.)
+
+Production database
+-------------------
+
+The script writes to whatever Postgres ``POSTGRES_*`` points at (``PatternOS/.env`` or the shell).
+For production, run it **on the prod network** (app host, bastion, or ``ssh -L`` tunnel to Postgres)
+so ``mf_nav_daily`` fills on the **same** DB the API uses. Then run the two POSTs above (or the
+two MF pipeline buttons). Scheme detail pages show ``nav_days_in_db`` / date range from
+``mf_nav_daily`` — if a scheme still has ~1 day after seed, that AMFI code may be missing from
+the parquet snapshot you used, or the seed did not hit this database.
+
+Design goals
+------------
+
+- Idempotent: ``mf_nav_daily`` primary key ``(scheme_code, nav_date)`` + ``ON CONFLICT DO NOTHING``.
+  Source duplicates (same scheme + date) are collapsed with ``MAX(nav)`` before insert so one NAV per day.
+- Fast: bulk COPY, no row-by-row inserts.
+- Safe: seed once, then the daily AMFI pipeline continues.
+
+SQL checks (psql / any SQL client)
+----------------------------------
+
+Global duplicate keys (expect **0 rows**)::
+
+    SELECT scheme_code, nav_date, COUNT(*) AS c
+    FROM mf_nav_daily
+    GROUP BY scheme_code, nav_date
+    HAVING COUNT(*) > 1;
+
+Per-scheme duplicates — replace ``147541`` with your AMFI ``scheme_code`` (expect **0 rows**)::
+
+    SELECT scheme_code, nav_date, COUNT(*) AS c
+    FROM mf_nav_daily
+    WHERE scheme_code = 147541
+    GROUP BY scheme_code, nav_date
+    HAVING COUNT(*) > 1;
+
+Per-scheme NAV coverage for that scheme::
+
+    SELECT COUNT(*) AS days, MIN(nav_date) AS first_nav, MAX(nav_date) AS last_nav
+    FROM mf_nav_daily
+    WHERE scheme_code = 147541;
 """
 
 from __future__ import annotations
@@ -14,11 +90,12 @@ import argparse
 import csv
 import json
 import os
+import shutil
 import sys
 import tempfile
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Iterator
 
 import httpx
 import psycopg2
@@ -28,7 +105,7 @@ from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-
+# Public mirror of the Kaggle bundle (see module docstring).
 PARQUET_DEFAULT = "https://github.com/InertExpert2911/Mutual_Fund_Data/raw/main/mutual_fund_nav_history.parquet"
 SCHEMES_CSV_DEFAULT = "https://github.com/InertExpert2911/Mutual_Fund_Data/raw/main/mutual_fund_data.csv"
 AMFI_NAVALL_URL = "https://portal.amfiindia.com/spages/NAVAll.txt"
@@ -42,6 +119,45 @@ def load_env() -> None:
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
                 os.environ.setdefault(k.strip(), v.strip())
+
+
+def default_parquet_url() -> str:
+    load_env()
+    return os.environ.get("MF_HISTORICAL_PARQUET_URL", PARQUET_DEFAULT).strip() or PARQUET_DEFAULT
+
+
+def default_csv_url() -> str:
+    load_env()
+    return os.environ.get("MF_HISTORICAL_SCHEMES_CSV_URL", SCHEMES_CSV_DEFAULT).strip() or SCHEMES_CSV_DEFAULT
+
+
+def discover_kaggle_dataset_files(root: Path) -> tuple[Path | None, Path | None]:
+    """
+    Locate parquet + CSV inside an extracted Kaggle bundle (any nesting depth).
+    Prefers filenames from tharunreddy2911/mutual-fund-data.
+    """
+    root = root.expanduser().resolve()
+    if not root.is_dir():
+        return None, None
+
+    parquets = sorted(root.rglob("*.parquet"))
+    csvs = sorted(root.rglob("*.csv"))
+
+    def pick_parquet(paths: list[Path]) -> Path | None:
+        for key in ("nav_history", "nav", "history"):
+            for p in paths:
+                if key in p.name.lower():
+                    return p
+        return paths[0] if paths else None
+
+    def pick_csv(paths: list[Path]) -> Path | None:
+        for key in ("mutual_fund_data", "scheme", "master"):
+            for p in paths:
+                if key in p.name.lower():
+                    return p
+        return paths[0] if paths else None
+
+    return pick_parquet(parquets), pick_csv(csvs)
 
 
 def db_dsn(dbname: str | None = None) -> dict[str, str]:
@@ -68,9 +184,18 @@ def ensure_db_exists() -> None:
     conn.close()
 
 
-def download(url: str, dst: Path) -> None:
+def _prepare_file(*, url: str | None, local_path: str | None, dst: Path) -> None:
+    if local_path:
+        src = Path(local_path).expanduser().resolve()
+        if not src.is_file():
+            raise FileNotFoundError(f"Local file not found: {src}")
+        print(f"[copy] {src} -> {dst}")
+        shutil.copyfile(src, dst)
+        return
+    if not url:
+        raise ValueError("Need url or local path")
     print(f"[download] {url} -> {dst}")
-    with httpx.Client(timeout=300, follow_redirects=True) as client:
+    with httpx.Client(timeout=600, follow_redirects=True) as client:
         with client.stream("GET", url) as r:
             r.raise_for_status()
             with dst.open("wb") as f:
@@ -78,16 +203,14 @@ def download(url: str, dst: Path) -> None:
                     f.write(chunk)
 
 
-def seed_schemes(conn) -> None:
-    # Load scheme master CSV into mf_schemes (upsert by scheme_code).
+def seed_schemes(conn, *, csv_url: str | None = None, csv_path: str | None = None) -> None:
     import pandas as pd  # pandas already in requirements
 
     with tempfile.TemporaryDirectory() as td:
-        csv_path = Path(td) / "schemes.csv"
-        download(SCHEMES_CSV_DEFAULT, csv_path)
-        df = pd.read_csv(csv_path)
+        csv_path_dst = Path(td) / "schemes.csv"
+        _prepare_file(url=csv_url or default_csv_url(), local_path=csv_path, dst=csv_path_dst)
+        df = pd.read_csv(csv_path_dst)
 
-    # Normalize expected columns from source.
     cols = {c.lower(): c for c in df.columns}
     code_col = cols.get("scheme_code") or cols.get("scheme code") or cols.get("amfi_code")
     name_col = cols.get("scheme_name") or cols.get("scheme name") or cols.get("name")
@@ -134,45 +257,70 @@ def seed_schemes(conn) -> None:
         cur.close()
 
 
-def iter_parquet_rows(parquet_path: Path) -> Iterator[tuple[int, str, float]]:
-    """
-    Stream (scheme_code, nav_date_iso, nav) from parquet row groups to avoid loading into RAM.
-    Parquet columns expected: Scheme_Code, Date, NAV
-    """
+def _parquet_nav_column_names(pf) -> tuple[str, str, str]:
+    import pyarrow.parquet as pq  # noqa: F401
+
+    names = list(pf.schema_arrow.names)
+    norm = {n.lower().replace(" ", "_"): n for n in names}
+
+    def pick(*candidates: str) -> str:
+        for raw in candidates:
+            k = raw.lower().replace(" ", "_")
+            if k in norm:
+                return norm[k]
+        raise RuntimeError(f"Could not resolve column among {candidates} — parquet has: {names}")
+
+    code = pick("Scheme_Code", "scheme_code", "SCHEME_CODE", "amfi_code", "Amfi_Code")
+    dcol = pick("Date", "date", "nav_date", "Nav_Date", "DATE")
+    ncol = pick("NAV", "nav", "Net_Asset_Value", "net_asset_value")
+    return code, dcol, ncol
+
+
+def iter_parquet_rows(parquet_path: Path, *, since: date | None = None) -> Iterator[tuple[int, str, float]]:
     import pyarrow.parquet as pq
 
     pf = pq.ParquetFile(parquet_path)
+    code_c, date_c, nav_c = _parquet_nav_column_names(pf)
+    cols = [code_c, date_c, nav_c]
+
     for i in range(pf.num_row_groups):
-        t = pf.read_row_group(i, columns=["Scheme_Code", "Date", "NAV"]).to_pydict()
-        codes = t["Scheme_Code"]
-        dates = t["Date"]
-        navs = t["NAV"]
+        t = pf.read_row_group(i, columns=cols).to_pydict()
+        codes = t[code_c]
+        dates = t[date_c]
+        navs = t[nav_c]
         for c, d, n in zip(codes, dates, navs):
             if c is None or d is None or n is None:
                 continue
             try:
                 code = int(c)
-                # Date might be datetime/date/string; normalize to ISO yyyy-mm-dd.
                 if isinstance(d, str):
                     nav_date = d[:10]
                 else:
                     nav_date = d.date().isoformat() if hasattr(d, "date") else str(d)
                 nav = float(n)
+                if since is not None:
+                    nd = date.fromisoformat(nav_date[:10])
+                    if nd < since:
+                        continue
             except Exception:
                 continue
             yield (code, nav_date, nav)
 
 
-def seed_nav_history(conn, parquet_url: str) -> None:
+def seed_nav_history(
+    conn,
+    *,
+    parquet_url: str | None = None,
+    parquet_path: str | None = None,
+    since: date | None = None,
+) -> None:
     with tempfile.TemporaryDirectory() as td:
-        parquet_path = Path(td) / "nav_history.parquet"
-        download(parquet_url, parquet_path)
+        parquet_dst = Path(td) / "nav_history.parquet"
+        _prepare_file(url=parquet_url or default_parquet_url(), local_path=parquet_path, dst=parquet_dst)
 
         cur = conn.cursor()
         cur.execute("CREATE TEMP TABLE tmp_mf_nav (scheme_code INT, nav_date DATE, nav NUMERIC(18,6))")
 
-        # Write a CSV stream chunk-wise and COPY into temp table in batches.
-        # This keeps Python memory bounded, while Postgres handles dedupe at insert time.
         batch = 200_000
         buf_rows: list[tuple[int, str, float]] = []
         total = 0
@@ -192,7 +340,7 @@ def seed_nav_history(conn, parquet_url: str) -> None:
             total += len(rows)
             print(f"[copy] +{len(rows)} rows (total buffered copied={total})")
 
-        for row in iter_parquet_rows(parquet_path):
+        for row in iter_parquet_rows(parquet_dst, since=since):
             buf_rows.append(row)
             if len(buf_rows) >= batch:
                 flush(buf_rows)
@@ -200,7 +348,6 @@ def seed_nav_history(conn, parquet_url: str) -> None:
 
         flush(buf_rows)
 
-        # Ensure schemes exist for FK: insert missing scheme codes as stubs.
         cur.execute(
             """
             INSERT INTO mf_schemes (scheme_code, scheme_name, updated_at)
@@ -209,26 +356,40 @@ def seed_nav_history(conn, parquet_url: str) -> None:
             """
         )
 
-        # Upsert NAV warehouse, dedup by PK.
+        # Parquet can repeat (scheme_code, nav_date). Postgres rejects multiple proposed rows
+        # with the same PK in one INSERT even with ON CONFLICT DO NOTHING — collapse first.
+        cur.execute(
+            """
+            SELECT COUNT(*)::bigint AS raw_rows,
+                   COUNT(DISTINCT (scheme_code, nav_date))::bigint AS distinct_keys
+            FROM tmp_mf_nav
+            """
+        )
+        raw_rows, distinct_keys = cur.fetchone()
+        dup_nav = int(raw_rows or 0) - int(distinct_keys or 0)
+        if dup_nav > 0:
+            print(f"[nav] dedupe: {dup_nav} duplicate (scheme_code, nav_date) rows in source → one NAV each (max(nav))")
+
         cur.execute(
             """
             INSERT INTO mf_nav_daily (scheme_code, nav_date, nav, source, ingested_at)
-            SELECT scheme_code, nav_date, nav, 'seed_parquet', NOW() FROM tmp_mf_nav
+            SELECT scheme_code, nav_date, nav, 'seed_parquet', NOW()
+            FROM (
+                SELECT scheme_code, nav_date, MAX(nav) AS nav
+                FROM tmp_mf_nav
+                GROUP BY scheme_code, nav_date
+            ) AS u
             ON CONFLICT (scheme_code, nav_date) DO NOTHING
             """
         )
+        ins_count = cur.rowcount
         conn.commit()
-        print("[ok] seeded NAV history into mf_nav_daily")
+        print(f"[ok] seeded NAV history into mf_nav_daily ({ins_count} rows inserted, {distinct_keys} unique keys from parquet)")
         cur.close()
 
 
 def backfill_from_amfi(conn) -> None:
-    """
-    Pull AMFI NAVAll.txt once to fill any gap between the parquet seed and "today".
-
-    Safe to run multiple times due to mf_nav_daily PK (scheme_code, nav_date).
-    """
-    from app.mf.amfi import parse_navall  # local import to keep script dependency-light
+    from app.mf.amfi import parse_navall
 
     cur = conn.cursor()
     try:
@@ -272,12 +433,18 @@ def backfill_from_amfi(conn) -> None:
         cur.execute(
             """
             INSERT INTO mf_nav_daily (scheme_code, nav_date, nav, source, ingested_at)
-            SELECT scheme_code, nav_date, nav, 'amfi', NOW() FROM tmp_mf_nav_backfill
+            SELECT scheme_code, nav_date, nav, 'amfi', NOW()
+            FROM (
+                SELECT scheme_code, nav_date, MAX(nav) AS nav
+                FROM tmp_mf_nav_backfill
+                GROUP BY scheme_code, nav_date
+            ) AS u
             ON CONFLICT (scheme_code, nav_date) DO NOTHING
             """
         )
+        amfi_ins = cur.rowcount
         conn.commit()
-        print(f"[ok] backfilled {len(rows)} NAV rows from AMFI")
+        print(f"[ok] backfilled AMFI: {len(rows)} parsed points → {amfi_ins} rows inserted (after dedupe + conflict skip)")
     finally:
         try:
             os.unlink(tmp.name)
@@ -324,25 +491,76 @@ def _run_finish(conn, run_id: str | None, *, ok: bool, stats: dict | None = None
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--parquet-url", default=PARQUET_DEFAULT)
+    ap.add_argument(
+        "--kaggle-dir",
+        default=None,
+        help="Folder with extracted Kaggle tharunreddy2911/mutual-fund-data (uses *.parquet + *.csv inside). "
+        "Also reads MF_KAGGLE_DATA_DIR from .env when set.",
+    )
+    ap.add_argument("--parquet-url", default=None, help="Override MF_HISTORICAL_PARQUET_URL (Kaggle mirror default).")
+    ap.add_argument("--parquet-path", default=None, help="Local parquet file (e.g. after kaggle datasets download).")
+    ap.add_argument("--csv-url", default=None, help="Override MF_HISTORICAL_SCHEMES_CSV_URL.")
+    ap.add_argument("--csv-path", default=None, help="Local scheme master CSV.")
     ap.add_argument("--skip-parquet", action="store_true")
     ap.add_argument("--skip-schemes", action="store_true")
+    ap.add_argument(
+        "--since-date",
+        default=None,
+        help="If set (YYYY-MM-DD), only import NAV rows on/after this date (e.g. 2006-01-01).",
+    )
     args = ap.parse_args()
+    since_dt: date | None = None
+    if args.since_date:
+        since_dt = date.fromisoformat(str(args.since_date).strip()[:10])
+
+    load_env()
+    kaggle_dir = args.kaggle_dir or os.environ.get("MF_KAGGLE_DATA_DIR", "").strip() or None
+    pq_path = args.parquet_path
+    csv_path = args.csv_path
+    if kaggle_dir:
+        pq_guess, csv_guess = discover_kaggle_dataset_files(Path(kaggle_dir))
+        if not pq_path and pq_guess:
+            pq_path = str(pq_guess)
+            print(f"[kaggle-dir] parquet: {pq_path}")
+        if not csv_path and csv_guess:
+            csv_path = str(csv_guess)
+            print(f"[kaggle-dir] csv: {csv_path}")
 
     ensure_db_exists()
     conn = psycopg2.connect(**db_dsn())
     conn.autocommit = False
     run_id = None
+    purl = args.parquet_url or default_parquet_url()
+    curl = args.csv_url or default_csv_url()
     try:
         run_id = _run_start(conn)
         if not args.skip_schemes:
-            seed_schemes(conn)
+            seed_schemes(conn, csv_url=curl if not csv_path else None, csv_path=csv_path)
         if not args.skip_parquet:
-            seed_nav_history(conn, args.parquet_url)
+            seed_nav_history(
+                conn,
+                parquet_url=purl if not pq_path else None,
+                parquet_path=pq_path,
+                since=since_dt,
+            )
         backfill_from_amfi(conn)
-        _run_finish(conn, run_id, ok=True, stats={"parquet_url": args.parquet_url, "skip_schemes": args.skip_schemes, "skip_parquet": args.skip_parquet})
+        _run_finish(
+            conn,
+            run_id,
+            ok=True,
+            stats={
+                "parquet_url": purl,
+                "csv_url": curl,
+                "kaggle_dir": kaggle_dir,
+                "parquet_path": pq_path,
+                "csv_path": csv_path,
+                "skip_schemes": args.skip_schemes,
+                "skip_parquet": args.skip_parquet,
+                "since_date": args.since_date,
+            },
+        )
     except Exception as e:
-        _run_finish(conn, run_id, ok=False, stats={"parquet_url": args.parquet_url}, error=str(e))
+        _run_finish(conn, run_id, ok=False, stats={"parquet_url": purl}, error=str(e))
         raise
     finally:
         conn.close()

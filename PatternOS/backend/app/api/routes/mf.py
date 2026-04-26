@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import and_, or_, text
+from sqlalchemy import and_, func, or_, text
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -24,6 +24,7 @@ from app.db.models import (
 )
 from app.api.schemas import (
     MFSchemeOut,
+    MFSchemeDetailOut,
     MFSchemeUpdate,
     MFNavPoint,
     MFSignalOut,
@@ -49,6 +50,10 @@ from app.mf.pipelines import (
     ensure_curated_watchlist,
     compute_nav_metrics,
     generate_nav_signals,
+    enrich_schemes_mfdata_batch,
+    mark_monitored_for_schemes_with_nav,
+    demote_monitored_outside_equity_direct_growth,
+    sync_priority_amc_equity_direct_growth_monitored,
 )
 from app.mf.rules import validate_rulebook_v1
 from app.mf.links import ensure_scheme_links
@@ -225,6 +230,17 @@ def _safe_task_finish(t: IngestionTask | None, *, ok: bool, error: str | None = 
         pass
 
 
+def _mf_nav_limit_for_tf(tf: str, base: int) -> int:
+    """Fetch enough daily NAV rows before resampling to weekly/monthly bars."""
+    tf = (tf or "1d").strip()
+    b = max(int(base), 60)
+    if tf == "1w":
+        return min(10_000, max(b * 8, 400))
+    if tf == "1M":
+        return min(10_000, max(b * 35, 500))
+    return min(10_000, b)
+
+
 def _json_response(payload: dict[str, Any]) -> Response:
     """
     Return a JSON response without relying on Starlette's strict JSON encoding.
@@ -306,11 +322,13 @@ def list_schemes(
         rows = q.order_by(MFScheme.updated_at.desc().nullslast()).limit(limit).offset(offset).all()
 
     for s in rows:
-        ensure_scheme_links(s)
+        if ensure_scheme_links(s):
+            db.add(s)
+    db.commit()
     return rows
 
 
-@router.get("/schemes/{scheme_code}", response_model=MFSchemeOut)
+@router.get("/schemes/{scheme_code}", response_model=MFSchemeDetailOut)
 def get_scheme(scheme_code: int, db: Session = Depends(get_db)):
     s = db.query(MFScheme).filter_by(scheme_code=scheme_code).first()
     if not s:
@@ -339,6 +357,10 @@ def get_scheme(scheme_code: int, db: Session = Depends(get_db)):
                 s.exit_load = ext.exit_load or s.exit_load
                 s.benchmark = ext.benchmark or s.benchmark
                 s.morningstar_sec_id = ext.morningstar_sec_id or s.morningstar_sec_id
+                if ext.value_research_fund_id is not None and s.value_research_fund_id is None:
+                    s.value_research_fund_id = ext.value_research_fund_id
+                if ext.yahoo_finance_symbol and not s.yahoo_finance_symbol:
+                    s.yahoo_finance_symbol = ext.yahoo_finance_symbol
                 if ext.launch_date:
                     try:
                         s.launch_date = datetime.fromisoformat(ext.launch_date).date()
@@ -353,11 +375,18 @@ def get_scheme(scheme_code: int, db: Session = Depends(get_db)):
         # Detail pages should still work even if enrichment fails.
         pass
     if ensure_scheme_links(s):
-        db.add(s)
+        pass
     db.add(s)
     db.commit()
     db.refresh(s)
-    return s
+    nav_stats = (
+        db.query(func.count(MFNavDaily.nav_date), func.min(MFNavDaily.nav_date), func.max(MFNavDaily.nav_date))
+        .filter(MFNavDaily.scheme_code == scheme_code)
+        .one()
+    )
+    n_days, d_min, d_max = int(nav_stats[0] or 0), nav_stats[1], nav_stats[2]
+    base = MFSchemeOut.model_validate(s).model_dump()
+    return MFSchemeDetailOut(**base, nav_days_in_db=n_days, nav_date_min=d_min, nav_date_max=d_max)
 
 
 @router.patch("/schemes/{scheme_code}", response_model=MFSchemeOut)
@@ -365,20 +394,8 @@ def update_scheme(scheme_code: int, body: MFSchemeUpdate, db: Session = Depends(
     s = db.query(MFScheme).filter_by(scheme_code=scheme_code).first()
     if not s:
         raise HTTPException(404, "Scheme not found")
-    if body.monitored is not None:
-        s.monitored = body.monitored
-    if body.notes is not None:
-        s.notes = body.notes
-    if body.valueresearch_url is not None:
-        s.valueresearch_url = body.valueresearch_url
-    if body.morningstar_url is not None:
-        s.morningstar_url = body.morningstar_url
-    if body.morningstar_sec_id is not None:
-        s.morningstar_sec_id = body.morningstar_sec_id
-    if body.valueresearch_link_status is not None:
-        s.valueresearch_link_status = body.valueresearch_link_status
-    if body.morningstar_link_status is not None:
-        s.morningstar_link_status = body.morningstar_link_status
+    for key, value in body.dict(exclude_unset=True).items():
+        setattr(s, key, value)
     ensure_scheme_links(s)
     db.add(s)
     db.commit()
@@ -440,16 +457,21 @@ def scheme_metrics(
     }
 
 
-@router.get("/schemes/{scheme_code}/indicators")
-def scheme_indicators(
+@router.get("/schemes/{scheme_code}/ohlc")
+def scheme_ohlc(
     scheme_code: int,
-    limit: int = Query(420, ge=50, le=5000),
+    tf: str = Query("1d", pattern=r"^(1d|1w|1M)$"),
+    style: str = Query("candle", pattern=r"^(candle|heikin|line)$"),
+    limit: int = Query(2500, ge=10, le=10000),
     db: Session = Depends(get_db),
 ):
-    """
-    Indicator records for MF NAV series.
-    Uses the same indicator engine as Equity (`INDICATOR_ENGINE=auto|ta|talib`).
-    """
+    """Aggregated OHLC from NAV (daily → optional W/M resample) for MF charting."""
+    s = db.query(MFScheme).filter_by(scheme_code=scheme_code).first()
+    if not s:
+        raise HTTPException(404, "Scheme not found")
+
+    from app.mf.nav_ohlc import heikin_ashi, line_ohlc, nav_rows_to_daily_ohlc_df, ohlc_to_series_payload, resample_nav_ohlc
+
     rows = (
         db.query(MFNavDaily)
         .filter_by(scheme_code=scheme_code)
@@ -458,17 +480,47 @@ def scheme_indicators(
         .all()
     )
     if not rows:
+        return {"scheme_code": scheme_code, "tf": tf, "style": style, "series": []}
+    rows = list(reversed(rows))
+    df = nav_rows_to_daily_ohlc_df(rows)
+    df = resample_nav_ohlc(df, tf)
+    if df is None or df.empty:
+        return {"scheme_code": scheme_code, "tf": tf, "style": style, "series": []}
+    if style == "heikin":
+        df = heikin_ashi(df)
+    elif style == "line":
+        df = line_ohlc(df)
+    return {"scheme_code": scheme_code, "tf": tf, "style": style, "series": ohlc_to_series_payload(df)}
+
+
+@router.get("/schemes/{scheme_code}/indicators")
+def scheme_indicators(
+    scheme_code: int,
+    tf: str = Query("1d", pattern=r"^(1d|1w|1M)$"),
+    limit: int = Query(420, ge=50, le=10000),
+    db: Session = Depends(get_db),
+):
+    """
+    Indicator records for MF NAV series.
+    Uses the same indicator engine as Equity (`INDICATOR_ENGINE=auto|ta|talib`).
+    """
+    from app.mf.nav_ohlc import nav_rows_to_daily_ohlc_df, resample_nav_ohlc
+
+    nav_limit = _mf_nav_limit_for_tf(tf, limit)
+    rows = (
+        db.query(MFNavDaily)
+        .filter_by(scheme_code=scheme_code)
+        .order_by(MFNavDaily.nav_date.desc())
+        .limit(nav_limit)
+        .all()
+    )
+    if not rows:
         return []
     rows = list(reversed(rows))
-    import pandas as pd
-
-    closes = [float(r.nav) for r in rows]
-    dates = [r.nav_date for r in rows]
-    # Pseudo OHLC from NAV close: open=prev close, high/low bounds.
-    opens = [closes[0]] + closes[:-1]
-    highs = [max(o, c) for o, c in zip(opens, closes)]
-    lows = [min(o, c) for o, c in zip(opens, closes)]
-    df = pd.DataFrame({"Open": opens, "High": highs, "Low": lows, "Close": closes, "Volume": [0] * len(closes)}, index=pd.to_datetime(dates))
+    df = nav_rows_to_daily_ohlc_df(rows)
+    df = resample_nav_ohlc(df, tf)
+    if df is None or df.empty:
+        return []
     idf = compute_indicators(df)
     return indicators_to_records(idf)
 
@@ -476,6 +528,7 @@ def scheme_indicators(
 @router.get("/schemes/{scheme_code}/patterns")
 def scheme_patterns(
     scheme_code: int,
+    tf: str = Query("1d", pattern=r"^(1d|1w|1M)$"),
     lookback: int = Query(180, ge=30, le=500),
     db: Session = Depends(get_db),
 ):
@@ -484,24 +537,23 @@ def scheme_patterns(
     - chart patterns (best-effort; may be less meaningful for NAV)
     - candlestick patterns + TA-Lib candlestick patterns (more robust for quick markers)
     """
+    from app.mf.nav_ohlc import nav_rows_to_daily_ohlc_df, resample_nav_ohlc
+
+    nav_limit = _mf_nav_limit_for_tf(tf, max(lookback, 60))
     rows = (
         db.query(MFNavDaily)
         .filter_by(scheme_code=scheme_code)
         .order_by(MFNavDaily.nav_date.desc())
-        .limit(max(lookback, 60))
+        .limit(nav_limit)
         .all()
     )
     if not rows:
         return {"chart_patterns": [], "candlestick_patterns": [], "talib_candlestick_patterns": []}
     rows = list(reversed(rows))
-    import pandas as pd
-
-    closes = [float(r.nav) for r in rows]
-    dates = [r.nav_date for r in rows]
-    opens = [closes[0]] + closes[:-1]
-    highs = [max(o, c) for o, c in zip(opens, closes)]
-    lows = [min(o, c) for o, c in zip(opens, closes)]
-    df = pd.DataFrame({"Open": opens, "High": highs, "Low": lows, "Close": closes, "Volume": [0] * len(closes)}, index=pd.to_datetime(dates))
+    df = nav_rows_to_daily_ohlc_df(rows)
+    df = resample_nav_ohlc(df, tf)
+    if df is None or df.empty:
+        return {"chart_patterns": [], "candlestick_patterns": [], "talib_candlestick_patterns": []}
     return {
         "chart_patterns": detect_chart_patterns(df, lookback=lookback),
         "candlestick_patterns": detect_candlestick_patterns(df, lookback=min(30, lookback)),
@@ -545,6 +597,10 @@ def enable_scheme_analysis(scheme_code: int, db: Session = Depends(get_db)):
             s.exit_load = ext.exit_load or s.exit_load
             s.benchmark = ext.benchmark or s.benchmark
             s.morningstar_sec_id = ext.morningstar_sec_id or s.morningstar_sec_id
+            if ext.value_research_fund_id is not None and s.value_research_fund_id is None:
+                s.value_research_fund_id = ext.value_research_fund_id
+            if ext.yahoo_finance_symbol and not s.yahoo_finance_symbol:
+                s.yahoo_finance_symbol = ext.yahoo_finance_symbol
             if ext.returns is not None:
                 s.returns_json = ext.returns
             if ext.ratios is not None:
@@ -900,20 +956,67 @@ def run_holdings_pipeline(db: Session = Depends(get_db)):
 
 
 @router.post("/pipeline/holdings/bootstrap")
-def run_holdings_bootstrap(db: Session = Depends(get_db)):
-    stats = bootstrap_holdings_history(db, months=12)
+def run_holdings_bootstrap(
+    db: Session = Depends(get_db),
+    months: int = Query(240, ge=1, le=600, description="Months of holdings history to pull (capped by MF_HOLDINGS_BOOTSTRAP_MAX_MONTHS in .env)."),
+):
+    cap = min(int(months), int(get_settings().MF_HOLDINGS_BOOTSTRAP_MAX_MONTHS))
+    stats = bootstrap_holdings_history(db, months=cap)
     return {"ok": True, "stats": stats}
 
 
 @router.post("/pipeline/backfill/run")
-def run_backfill_pipeline(db: Session = Depends(get_db)):
-    stats = backfill_nav_history_mfapi(db)
+def run_backfill_pipeline(
+    db: Session = Depends(get_db),
+    start_date: date | None = Query(None, description="Earliest date for MFAPI windowed backfill (default in code: 2000-01-01)."),
+):
+    sd = start_date or date(2006, 1, 1)
+    stats = backfill_nav_history_mfapi(db, start_date=sd)
     return {"ok": True, "stats": stats}
 
 
 @router.post("/pipeline/nav/gapfill")
-def run_nav_gapfill_pipeline(db: Session = Depends(get_db)):
-    stats = gap_fill_nav_history_mfdata(db)
+def run_nav_gapfill_pipeline(
+    db: Session = Depends(get_db),
+    max_schemes: int | None = Query(None, ge=1, le=50_000, description="Override MF_GAPFILL_MAX_SCHEMES for this run."),
+):
+    stats = gap_fill_nav_history_mfdata(db, max_schemes=max_schemes)
+    return {"ok": True, "stats": stats}
+
+
+@router.post("/pipeline/enrich/batch")
+def run_enrich_batch(
+    db: Session = Depends(get_db),
+    monitored_only: bool = Query(True, description="If false, enriches any scheme missing/stale mfdata (slower)."),
+    max_schemes: int = Query(200, ge=1, le=5000),
+):
+    stats = enrich_schemes_mfdata_batch(db, monitored_only=monitored_only, max_per_run=max_schemes)
+    return {"ok": True, "stats": stats}
+
+
+@router.post("/pipeline/watchlist/mark-with-nav")
+def run_mark_monitored_with_nav(
+    db: Session = Depends(get_db),
+    limit: int | None = Query(None, description="Max schemes to mark; null uses MF_MARK_MONITORED_NAV_LIMIT (0 = unlimited)."),
+):
+    stats = mark_monitored_for_schemes_with_nav(db, limit=limit)
+    return {"ok": True, "stats": stats}
+
+
+@router.post("/pipeline/watchlist/demote-non-equity-dg")
+def run_demote_watchlist_outside_equity_dg(db: Session = Depends(get_db)):
+    """Clear monitored flags for schemes outside ICICI/HDFC/Axis/Mirae equity Direct Growth (excl. Regular/IDCW). Prefer `sync-priority-amc` for a full realign."""
+    stats = demote_monitored_outside_equity_direct_growth(db)
+    return {"ok": True, "stats": stats}
+
+
+@router.post("/pipeline/watchlist/sync-priority-amc")
+def run_sync_priority_amc_watchlist(db: Session = Depends(get_db)):
+    """
+    Demote everything outside ICICI/HDFC/Axis/Mirae equity Direct Growth (excl. Regular & IDCW),
+    then promote all schemes that match that scope. Use after changing scope rules or seeding NAV.
+    """
+    stats = sync_priority_amc_equity_direct_growth_monitored(db)
     return {"ok": True, "stats": stats}
 
 
@@ -1129,7 +1232,7 @@ def nav_quality(
 
 @router.get("/providers", response_model=list[MFProviderStateOut])
 def list_providers(db: Session = Depends(get_db)):
-    for p in ("amfi", "mfdata", "mfapi", "valueresearch", "morningstar"):
+    for p in ("amfi", "mfdata", "mfapi", "valueresearch", "morningstar", "yahoo"):
         if not db.query(MFProviderState).filter_by(provider=p).first():
             db.add(MFProviderState(provider=p))
     db.commit()
@@ -1138,14 +1241,14 @@ def list_providers(db: Session = Depends(get_db)):
 
 @router.post("/providers/{provider}/pause", response_model=MFProviderStateOut)
 def pause_provider_route(provider: str, body: MFProviderPauseRequest, db: Session = Depends(get_db)):
-    if provider not in ("amfi", "mfdata", "mfapi", "valueresearch", "morningstar"):
+    if provider not in ("amfi", "mfdata", "mfapi", "valueresearch", "morningstar", "yahoo"):
         raise HTTPException(400, "Unknown provider")
     return pause_provider(db, provider, minutes=body.minutes, reason=body.reason)
 
 
 @router.post("/providers/{provider}/resume", response_model=MFProviderStateOut)
 def resume_provider_route(provider: str, db: Session = Depends(get_db)):
-    if provider not in ("amfi", "mfdata", "mfapi", "valueresearch", "morningstar"):
+    if provider not in ("amfi", "mfdata", "mfapi", "valueresearch", "morningstar", "yahoo"):
         raise HTTPException(400, "Unknown provider")
     return resume_provider(db, provider)
 

@@ -22,6 +22,8 @@ class MfdataScheme:
     nav: float | None
     nav_date: str | None
     morningstar_sec_id: str | None
+    value_research_fund_id: int | None
+    yahoo_finance_symbol: str | None
     expense_ratio: float | None
     risk_label: str | None
     aum: float | None
@@ -54,11 +56,38 @@ def _request_json(url: str, *, timeout_s: float, t: IngestionTask | None, bucket
         return r.json()
 
 
+def _opt_int(v: Any) -> int | None:
+    if v is None or v == "":
+        return None
+    try:
+        return int(v)
+    except Exception:
+        return None
+
+
+def _opt_str(v: Any) -> str | None:
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s or None
+
+
 def fetch_scheme(amfi_code: int, *, timeout_s: float = 20, task: IngestionTask | None = None) -> MfdataScheme | None:
     raw = _request_json(f"{BASE}/schemes/{amfi_code}", timeout_s=timeout_s, t=task, bucket="nav")
     data = _get_data(raw)
     if not isinstance(data, dict):
         return None
+    vr_id = _opt_int(
+        data.get("value_research_fund_id")
+        or data.get("vr_fund_id")
+        or data.get("valueresearch_fund_id")
+        or data.get("vr_id")
+    )
+    ysym = _opt_str(
+        data.get("yahoo_finance_symbol")
+        or data.get("yahoo_symbol")
+        or data.get("yahoo_ticker")
+    )
     return MfdataScheme(
         amfi_code=int(data.get("amfi_code")),
         family_id=(int(data["family_id"]) if data.get("family_id") is not None else None),
@@ -69,6 +98,8 @@ def fetch_scheme(amfi_code: int, *, timeout_s: float = 20, task: IngestionTask |
         nav=(float(data["nav"]) if data.get("nav") is not None else None),
         nav_date=data.get("nav_date"),
         morningstar_sec_id=(str(data.get("morningstar_sec_id")) if data.get("morningstar_sec_id") else None),
+        value_research_fund_id=vr_id,
+        yahoo_finance_symbol=ysym,
         expense_ratio=(float(data["expense_ratio"]) if data.get("expense_ratio") is not None else None),
         risk_label=data.get("risk_label"),
         aum=(float(data["aum"]) if data.get("aum") is not None else None),

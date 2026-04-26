@@ -26,6 +26,8 @@ import pandas as pd
 from scipy.signal import argrelextrema  # type: ignore[import-untyped]
 from typing import Any
 
+from app.scanner.pattern_cooldown import collapse_by_bar_index_gap, collapse_chart_patterns_by_end_date_gap
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -90,7 +92,7 @@ def detect_chart_patterns(df: pd.DataFrame, lookback: int = 120) -> list[dict]:
             pass
 
     results.sort(key=lambda x: x.get("end_date", ""), reverse=True)
-    return results
+    return collapse_chart_patterns_by_end_date_gap(results, cooldown_days=14)
 
 
 # ── Head & Shoulders ──────────────────────────────────────────────────────────
@@ -600,36 +602,78 @@ def detect_candlestick_patterns(df: pd.DataFrame, lookback: int = 30) -> list[di
 
         # Doji: body < 10% of total range
         if b / t < 0.10:
-            results.append({"date": dates[i], "pattern": "Doji", "direction": "neutral",
-                            "description": "Indecision candle — body < 10% of range."})
+            results.append(
+                {
+                    "_bar_index": i,
+                    "date": dates[i],
+                    "pattern": "Doji",
+                    "direction": "neutral",
+                    "description": "Indecision candle — body < 10% of range.",
+                }
+            )
             continue
 
         # Marubozu: almost no wicks
         if uw / t < 0.05 and lw / t < 0.05:
             d = "bullish" if is_bull(i) else "bearish"
-            results.append({"date": dates[i], "pattern": "Marubozu", "direction": d,
-                            "description": f"{d.title()} Marubozu — strong momentum, no wicks."})
+            results.append(
+                {
+                    "_bar_index": i,
+                    "date": dates[i],
+                    "pattern": "Marubozu",
+                    "direction": d,
+                    "description": f"{d.title()} Marubozu — strong momentum, no wicks.",
+                }
+            )
             continue
 
         # Hammer (single): long lower wick, small body near top, in downtrend
         if lw >= 2 * b and uw / t < 0.15 and lw / t > 0.55:
-            results.append({"date": dates[i], "pattern": "Hammer", "direction": "bullish",
-                            "description": "Hammer — long lower wick suggests buying pressure at lows."})
+            results.append(
+                {
+                    "_bar_index": i,
+                    "date": dates[i],
+                    "pattern": "Hammer",
+                    "direction": "bullish",
+                    "description": "Hammer — long lower wick suggests buying pressure at lows.",
+                }
+            )
 
         # Inverted Hammer: long upper wick, small body near bottom
         if uw >= 2 * b and lw / t < 0.15 and uw / t > 0.55:
-            results.append({"date": dates[i], "pattern": "Inverted Hammer", "direction": "bullish",
-                            "description": "Inverted Hammer — potential reversal signal."})
+            results.append(
+                {
+                    "_bar_index": i,
+                    "date": dates[i],
+                    "pattern": "Inverted Hammer",
+                    "direction": "bullish",
+                    "description": "Inverted Hammer — potential reversal signal.",
+                }
+            )
 
         # Shooting Star: long upper wick, small body near bottom, in uptrend
         if uw >= 2 * b and lw / t < 0.15 and uw / t > 0.55 and not is_bull(i):
-            results.append({"date": dates[i], "pattern": "Shooting Star", "direction": "bearish",
-                            "description": "Shooting Star — bearish rejection at highs."})
+            results.append(
+                {
+                    "_bar_index": i,
+                    "date": dates[i],
+                    "pattern": "Shooting Star",
+                    "direction": "bearish",
+                    "description": "Shooting Star — bearish rejection at highs.",
+                }
+            )
 
         # Spinning top: small body with nearly equal wicks
         if b / t < 0.35 and abs(uw - lw) / t < 0.15:
-            results.append({"date": dates[i], "pattern": "Spinning Top", "direction": "neutral",
-                            "description": "Spinning Top — balance between buyers and sellers."})
+            results.append(
+                {
+                    "_bar_index": i,
+                    "date": dates[i],
+                    "pattern": "Spinning Top",
+                    "direction": "neutral",
+                    "description": "Spinning Top — balance between buyers and sellers.",
+                }
+            )
 
         # Two-bar patterns
         if i < 1:
@@ -639,24 +683,52 @@ def detect_candlestick_patterns(df: pd.DataFrame, lookback: int = 30) -> list[di
         # Engulfing
         if (is_bull(i) and not is_bull(i - 1) and
                 closes[i] > opens[i - 1] and opens[i] < closes[i - 1] and b > pb):
-            results.append({"date": dates[i], "pattern": "Bullish Engulfing", "direction": "bullish",
-                            "description": "Bullish Engulfing — buyers overwhelm prior sellers."})
+            results.append(
+                {
+                    "_bar_index": i,
+                    "date": dates[i],
+                    "pattern": "Bullish Engulfing",
+                    "direction": "bullish",
+                    "description": "Bullish Engulfing — buyers overwhelm prior sellers.",
+                }
+            )
 
         if (not is_bull(i) and is_bull(i - 1) and
                 closes[i] < opens[i - 1] and opens[i] > closes[i - 1] and b > pb):
-            results.append({"date": dates[i], "pattern": "Bearish Engulfing", "direction": "bearish",
-                            "description": "Bearish Engulfing — sellers overwhelm prior buyers."})
+            results.append(
+                {
+                    "_bar_index": i,
+                    "date": dates[i],
+                    "pattern": "Bearish Engulfing",
+                    "direction": "bearish",
+                    "description": "Bearish Engulfing — sellers overwhelm prior buyers.",
+                }
+            )
 
         # Harami
         if (is_bull(i) and not is_bull(i - 1) and
                 opens[i] > closes[i - 1] and closes[i] < opens[i - 1]):
-            results.append({"date": dates[i], "pattern": "Bullish Harami", "direction": "bullish",
-                            "description": "Bullish Harami — small candle inside prior bearish candle."})
+            results.append(
+                {
+                    "_bar_index": i,
+                    "date": dates[i],
+                    "pattern": "Bullish Harami",
+                    "direction": "bullish",
+                    "description": "Bullish Harami — small candle inside prior bearish candle.",
+                }
+            )
 
         if (not is_bull(i) and is_bull(i - 1) and
                 opens[i] < closes[i - 1] and closes[i] > opens[i - 1]):
-            results.append({"date": dates[i], "pattern": "Bearish Harami", "direction": "bearish",
-                            "description": "Bearish Harami — small candle inside prior bullish candle."})
+            results.append(
+                {
+                    "_bar_index": i,
+                    "date": dates[i],
+                    "pattern": "Bearish Harami",
+                    "direction": "bearish",
+                    "description": "Bearish Harami — small candle inside prior bullish candle.",
+                }
+            )
 
         # Three-bar patterns
         if i < 2:
@@ -665,13 +737,27 @@ def detect_candlestick_patterns(df: pd.DataFrame, lookback: int = 30) -> list[di
         # Morning Star
         if (not is_bull(i - 2) and body(i - 1) / total(i - 1) < 0.3 and is_bull(i) and
                 closes[i] > (opens[i - 2] + closes[i - 2]) / 2):
-            results.append({"date": dates[i], "pattern": "Morning Star", "direction": "bullish",
-                            "description": "Morning Star — 3-bar bullish reversal at lows."})
+            results.append(
+                {
+                    "_bar_index": i,
+                    "date": dates[i],
+                    "pattern": "Morning Star",
+                    "direction": "bullish",
+                    "description": "Morning Star — 3-bar bullish reversal at lows.",
+                }
+            )
 
         # Evening Star
         if (is_bull(i - 2) and body(i - 1) / total(i - 1) < 0.3 and not is_bull(i) and
                 closes[i] < (opens[i - 2] + closes[i - 2]) / 2):
-            results.append({"date": dates[i], "pattern": "Evening Star", "direction": "bearish",
-                            "description": "Evening Star — 3-bar bearish reversal at highs."})
+            results.append(
+                {
+                    "_bar_index": i,
+                    "date": dates[i],
+                    "pattern": "Evening Star",
+                    "direction": "bearish",
+                    "description": "Evening Star — 3-bar bearish reversal at highs.",
+                }
+            )
 
-    return results
+    return collapse_by_bar_index_gap(results, identity_fields=("pattern", "direction"), cooldown_bars=14)

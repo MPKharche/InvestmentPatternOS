@@ -15,6 +15,7 @@ from app.scanner.criteria_checks import run_criteria_at_index
 from app.scanner.data import fetch_ohlcv
 from app.scanner.indicators import compute_indicators
 from app.scanner.rulebook_criteria import extract_criteria_and_direction
+from app.compat.vectorbt_shim import apply_vectorbt_ptb_compat
 
 
 def run_backtest_vectorbt(pattern_id: str, db: Session, scope: str = "full", symbols: list[str] | None = None) -> str:
@@ -24,6 +25,7 @@ def run_backtest_vectorbt(pattern_id: str, db: Session, scope: str = "full", sym
     - Generates PatternEvent rows (so UI/event drilldowns still work)
     - Computes richer portfolio stats using vectorbt (stored in backtest_runs.stats_json)
     """
+    apply_vectorbt_ptb_compat()
     try:
         import vectorbt as vbt  # type: ignore
     except Exception as exc:

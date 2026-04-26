@@ -141,3 +141,49 @@ test("patterns API list returns seeded pack", async ({ request }) => {
   expect(Array.isArray(list)).toBeTruthy();
   expect(list.length).toBeGreaterThan(0);
 });
+
+test("mf chart tool: bar tf + style toggles and toolbar", async ({ page }) => {
+  await page.goto("/mf/chart");
+  await expect(page.getByTestId("mf-chart-toolbar")).toBeVisible({ timeout: 30_000 });
+  await page.getByTestId("mf-bar-tf-1w").click();
+  await page.getByTestId("mf-chart-style-candle").click();
+  await page.getByTestId("mf-bar-tf-1d").click();
+  await page.getByTestId("mf-chart-style-line").click();
+});
+
+test("mf chart tool: patterns sidebar + reset range", async ({ page }) => {
+  await page.goto("/mf/chart");
+  await expect(page.getByTestId("mf-chart-toolbar")).toBeVisible({ timeout: 30_000 });
+  await page.getByTestId("mf-patterns-tab").click();
+  await expect(page.getByTestId("mf-patterns-sidebar")).toBeVisible();
+  await page.getByTestId("mf-patterns-reset-range").click();
+});
+
+test("mf chart tool: nav banner visible", async ({ page }) => {
+  await page.goto("/mf/chart");
+  await expect(page.getByTestId("mf-nav-banner")).toBeVisible({ timeout: 30_000 });
+});
+
+test("mf chart tool: Yahoo link on Links tab", async ({ page }) => {
+  await page.goto("/mf/chart");
+  await page.getByTestId("mf-links-tab").click();
+  await expect(page.getByTestId("mf-links-yahoo")).toBeVisible({ timeout: 15_000 });
+});
+
+test("mf chart tool: RSI pane when RSI enabled", async ({ page }) => {
+  await page.goto("/mf/chart");
+  await expect(page.getByTestId("mf-chart-toolbar")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("mf-rsi-pane")).toBeVisible({ timeout: 20_000 });
+});
+
+test("mf chart OHLC API returns series for monitored scheme", async ({ request }) => {
+  const schemesRes = await request.get(`${API_BASE}/mf/schemes?monitored_only=true&limit=1&offset=0`);
+  expect(schemesRes.ok()).toBeTruthy();
+  const schemes = (await schemesRes.json()) as Array<{ scheme_code: number }>;
+  const code = schemes[0]?.scheme_code ?? 135106;
+  const res = await request.get(`${API_BASE}/mf/schemes/${code}/ohlc?tf=1d&style=line&limit=50`);
+  expect(res.ok()).toBeTruthy();
+  const json = await res.json();
+  expect(json).toHaveProperty("series");
+  expect(Array.isArray(json.series)).toBeTruthy();
+});

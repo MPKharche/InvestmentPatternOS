@@ -939,12 +939,20 @@ export interface MFScheme {
   notes?: string | null;
   valueresearch_url?: string | null;
   morningstar_url?: string | null;
+  yahoo_finance_url?: string | null;
   valueresearch_link_status?: string | null;
   morningstar_link_status?: string | null;
+  yahoo_link_status?: string | null;
   morningstar_sec_id?: string | null;
+  value_research_fund_id?: number | null;
+  yahoo_finance_symbol?: string | null;
   returns_json?: Record<string, unknown> | null;
   ratios_json?: Record<string, unknown> | null;
   updated_at?: string | null;
+  /** Present on GET /mf/schemes/{code} detail — rows in mf_nav_daily for this scheme. */
+  nav_days_in_db?: number;
+  nav_date_min?: string | null;
+  nav_date_max?: string | null;
 }
 
 export interface MFNavPoint {
@@ -999,6 +1007,21 @@ export interface MFPatternsResponse {
   talib_candlestick_patterns: any[];
 }
 
+export interface MFOhlcBar {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
+export interface MFOhlcResponse {
+  scheme_code: number;
+  tf: string;
+  style: string;
+  series: MFOhlcBar[];
+}
+
 export interface MFIngestionStatus {
   latest_nav_run?: any | null;
   latest_holdings_run?: any | null;
@@ -1038,6 +1061,9 @@ export interface MFRulebookVersion {
 export const mfApi = {
   status: () => request<MFIngestionStatus>("/mf/pipeline/status"),
   runNav: () => request<{ ok: boolean; stats: any }>("/mf/pipeline/nav/run", { method: "POST", body: JSON.stringify({}) }),
+  /** After a full historical NAV seed: demote/promote ICICI/HDFC/Axis/Mirae equity Direct Growth watchlist. */
+  syncPriorityAmcWatchlist: () =>
+    request<{ ok: boolean; stats: any }>("/mf/pipeline/watchlist/sync-priority-amc", { method: "POST", body: JSON.stringify({}) }),
   runHoldings: () => request<{ ok: boolean; stats: any }>("/mf/pipeline/holdings/run", { method: "POST", body: JSON.stringify({}) }),
   runHoldingsBootstrap: () => request<{ ok: boolean; stats: any }>("/mf/pipeline/holdings/bootstrap", { method: "POST", body: JSON.stringify({}) }),
   runBackfill: () => request<{ ok: boolean; stats: any }>("/mf/pipeline/backfill/run", { method: "POST", body: JSON.stringify({}) }),
@@ -1070,7 +1096,10 @@ export const mfApi = {
     body: {
       valueresearch_url?: string | null;
       morningstar_url?: string | null;
+      yahoo_finance_url?: string | null;
       morningstar_sec_id?: string | null;
+      value_research_fund_id?: number | null;
+      yahoo_finance_symbol?: string | null;
     }
   ) => request<MFScheme>(`/mf/schemes/${schemeCode}`, { method: "PATCH", body: JSON.stringify(body) }),
   enableScheme: (schemeCode: number) =>
@@ -1080,11 +1109,24 @@ export const mfApi = {
     ),
   nav: (schemeCode: number, limit = 400) =>
     request<MFNavPoint[]>(`/mf/schemes/${schemeCode}/nav?limit=${limit}`),
+  ohlc: (
+    schemeCode: number,
+    tf: "1d" | "1w" | "1M" = "1d",
+    style: "candle" | "heikin" | "line" = "candle",
+    limit = 2500
+  ) => {
+    const qs = new URLSearchParams({ tf, style, limit: String(limit) });
+    return request<MFOhlcResponse>(`/mf/schemes/${schemeCode}/ohlc?${qs}`);
+  },
   metrics: (schemeCode: number) => request<any>(`/mf/schemes/${schemeCode}/metrics`),
-  indicators: (schemeCode: number, limit = 420) =>
-    request<MFIndicatorRecord[]>(`/mf/schemes/${schemeCode}/indicators?limit=${limit}`),
-  patterns: (schemeCode: number, lookback = 180) =>
-    request<MFPatternsResponse>(`/mf/schemes/${schemeCode}/patterns?lookback=${lookback}`),
+  indicators: (schemeCode: number, limit = 420, tf: "1d" | "1w" | "1M" = "1d") => {
+    const qs = new URLSearchParams({ limit: String(limit), tf });
+    return request<MFIndicatorRecord[]>(`/mf/schemes/${schemeCode}/indicators?${qs}`);
+  },
+  patterns: (schemeCode: number, lookback = 180, tf: "1d" | "1w" | "1M" = "1d") => {
+    const qs = new URLSearchParams({ lookback: String(lookback), tf });
+    return request<MFPatternsResponse>(`/mf/schemes/${schemeCode}/patterns?${qs}`);
+  },
   holdings: (familyId: number) => request<any>(`/mf/families/${familyId}/holdings`),
   refreshHoldings: (familyId: number) =>
     request<{ ok: boolean; fetched?: boolean; month?: string; skipped?: boolean; reason?: string; error?: string }>(

@@ -11,6 +11,7 @@ export default function MFPipelinesPage() {
   const [status, setStatus] = useState<MFIngestionStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [runningNav, setRunningNav] = useState(false);
+  const [runningSyncWatchlist, setRunningSyncWatchlist] = useState(false);
   const [runningHoldings, setRunningHoldings] = useState(false);
   const [runningHoldingsBootstrap, setRunningHoldingsBootstrap] = useState(false);
   const [runningBackfill, setRunningBackfill] = useState(false);
@@ -44,6 +45,22 @@ export default function MFPipelinesPage() {
       toast.error(e instanceof Error ? e.message : "NAV run failed");
     } finally {
       setRunningNav(false);
+    }
+  };
+
+  const syncPriorityAmcWatchlist = async () => {
+    setRunningSyncWatchlist(true);
+    try {
+      const res = await mfApi.syncPriorityAmcWatchlist();
+      const st = res.stats as { promoted?: number; demoted?: number } | undefined;
+      toast.success(
+        `Watchlist synced${st != null ? ` (+${st.promoted ?? 0} promoted, −${st.demoted ?? 0} demoted)` : ""}`
+      );
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Watchlist sync failed");
+    } finally {
+      setRunningSyncWatchlist(false);
     }
   };
 
@@ -158,6 +175,9 @@ export default function MFPipelinesPage() {
           <Button variant="outline" size="sm" onClick={load} disabled={loading}>
             <RefreshCw className="h-3 w-3 mr-1" /> Refresh
           </Button>
+          <Button size="sm" variant="secondary" onClick={syncPriorityAmcWatchlist} disabled={runningSyncWatchlist}>
+            Sync priority AMC watchlist
+          </Button>
           <Button size="sm" onClick={runNav} disabled={runningNav}>
             Run NAV now
           </Button>
@@ -181,6 +201,32 @@ export default function MFPipelinesPage() {
           </Button>
         </div>
       </div>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">After a full historical seed</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm text-muted-foreground space-y-2">
+          <p>
+            One-time parquet load: run <code className="text-xs bg-muted px-1 rounded">backend/scripts/mf_seed_historical.py</code>{" "}
+            with <code className="text-xs bg-muted px-1 rounded">--kaggle-dir</code> or set{" "}
+            <code className="text-xs bg-muted px-1 rounded">MF_KAGGLE_DATA_DIR</code> (see script docstring and <code className="text-xs bg-muted px-1 rounded">.env.example</code>).
+            NAV rows are idempotent (<code className="text-xs bg-muted px-1 rounded">ON CONFLICT DO NOTHING</code>).
+          </p>
+          <p>
+            Then use <strong>Sync priority AMC watchlist</strong> above, then <strong>Run NAV now</strong> (same order as{" "}
+            <code className="text-xs bg-muted px-1 rounded">POST /api/v1/mf/pipeline/watchlist/sync-priority-amc</code> and{" "}
+            <code className="text-xs bg-muted px-1 rounded">POST /api/v1/mf/pipeline/nav/run</code>).
+          </p>
+          <p>
+            <strong>Prod</strong>: aim <code className="text-xs bg-muted px-1 rounded">POSTGRES_*</code> at the live DB (or SSH tunnel), run the seed, then the two actions above. Scheme pages show{" "}
+            <code className="text-xs bg-muted px-1 rounded">nav_days_in_db</code> — if it stays ~1 after seed, that AMFI code may be absent from your parquet or the seed did not run against this DB.
+          </p>
+          <p className="text-xs font-mono bg-muted/50 rounded p-2 overflow-x-auto">
+            SELECT COUNT(*), MIN(nav_date), MAX(nav_date) FROM mf_nav_daily WHERE scheme_code = 147541;
+          </p>
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card>

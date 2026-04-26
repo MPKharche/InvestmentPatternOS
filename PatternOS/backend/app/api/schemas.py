@@ -296,9 +296,13 @@ class MFSchemeOut(BaseModel):
     # External links (safe generated fallbacks; no scraping)
     valueresearch_url: Optional[str] = None
     morningstar_url: Optional[str] = None
+    yahoo_finance_url: Optional[str] = None
     valueresearch_link_status: Optional[str] = None
     morningstar_link_status: Optional[str] = None
+    yahoo_link_status: Optional[str] = None
     morningstar_sec_id: Optional[str] = None
+    value_research_fund_id: Optional[int] = None
+    yahoo_finance_symbol: Optional[str] = None
     returns_json: Optional[dict[str, Any]] = None
     ratios_json: Optional[dict[str, Any]] = None
 
@@ -308,14 +312,26 @@ class MFSchemeOut(BaseModel):
         from_attributes = True
 
 
+class MFSchemeDetailOut(MFSchemeOut):
+    """Scheme detail: includes NAV warehouse coverage (mf_nav_daily) for diagnostics."""
+
+    nav_days_in_db: int = 0
+    nav_date_min: Optional[date] = None
+    nav_date_max: Optional[date] = None
+
+
 class MFSchemeUpdate(BaseModel):
     monitored: Optional[bool] = None
     notes: Optional[str] = None
     valueresearch_url: Optional[str] = None
     morningstar_url: Optional[str] = None
+    yahoo_finance_url: Optional[str] = None
     morningstar_sec_id: Optional[str] = None
+    value_research_fund_id: Optional[int] = None
+    yahoo_finance_symbol: Optional[str] = None
     valueresearch_link_status: Optional[str] = None
     morningstar_link_status: Optional[str] = None
+    yahoo_link_status: Optional[str] = None
 
 
 class MFNavPoint(BaseModel):

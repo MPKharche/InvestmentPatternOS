@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import {
   createChart,
@@ -14,7 +14,15 @@ import {
   ColorType,
   LineStyle,
 } from "lightweight-charts";
-import { mfApi, type MFIndicatorRecord, type MFNavPoint, type MFPatternsResponse, type MFScheme, type MFSignal } from "@/lib/api";
+import {
+  mfApi,
+  type MFIndicatorRecord,
+  type MFNavPoint,
+  type MFOhlcBar,
+  type MFPatternsResponse,
+  type MFScheme,
+  type MFSignal,
+} from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -57,23 +65,29 @@ export default function MFSchemeDetailPage() {
   const macdSignalRef = useRef<ISeriesApi<"Line"> | null>(null);
 
   const [timeframe, setTimeframe] = useState<"1M" | "3M" | "6M" | "1Y" | "3Y" | "5Y" | "10Y" | "MAX">("MAX");
+  const [barTf, setBarTf] = useState<"1d" | "1w" | "1M">("1d");
+  const [rawOhlc, setRawOhlc] = useState<MFOhlcBar[]>([]);
   const [activeInds, setActiveInds] = useState<Set<IndKey>>(new Set(["ema20", "ema50", "rsi"]));
   const showRsi = activeInds.has("rsi");
   const showMacd = activeInds.has("macd");
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, n, inds, pats, m, sigs] = await Promise.all([
+      const indLimit = barTf === "1M" ? 8200 : barTf === "1w" ? 3800 : 5200;
+      const emptyOhlc = { scheme_code: schemeCode, tf: barTf, style: "line" as const, series: [] as MFOhlcBar[] };
+      const [s, n, ohlcRes, inds, pats, m, sigs] = await Promise.all([
         mfApi.scheme(schemeCode),
-        mfApi.nav(schemeCode, 2500),
-        mfApi.indicators(schemeCode, 2500),
-        mfApi.patterns(schemeCode, 220),
+        mfApi.nav(schemeCode, 5000),
+        mfApi.ohlc(schemeCode, barTf, "line", 5000).catch(() => emptyOhlc),
+        mfApi.indicators(schemeCode, indLimit, barTf),
+        mfApi.patterns(schemeCode, 220, barTf),
         mfApi.metrics(schemeCode),
         mfApi.signals("all", 400),
       ]);
       setScheme(s);
       setNav(n);
+      setRawOhlc(ohlcRes.series ?? []);
       setIndicators(inds);
       setPatterns(pats);
       setMetrics(m);
@@ -93,12 +107,11 @@ export default function MFSchemeDetailPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [schemeCode, barTf]);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [schemeCode]);
+  }, [load]);
 
   const filteredNav = useMemo(() => {
     if (timeframe === "MAX") return nav;
@@ -115,15 +128,49 @@ export default function MFSchemeDetailPage() {
     return nav.filter((p) => new Date(p.nav_date) >= start);
   }, [nav, timeframe]);
 
-  const filteredIndicators = useMemo(() => {
-    if (!indicators.length || !filteredNav.length) return [];
-    const allowed = new Set(filteredNav.map((p) => p.nav_date));
-    return indicators.filter((r) => allowed.has(r.time));
-  }, [indicators, filteredNav]);
+  const filteredOhlc = useMemo(() => {
+    if (timeframe === "MAX" || !rawOhlc.length) return rawOhlc;
+    const end = new Date(rawOhlc[rawOhlc.length - 1].time);
+    const start = new Date(end);
+    if (timeframe === "1M") start.setMonth(start.getMonth() - 1);
+    if (timeframe === "3M") start.setMonth(start.getMonth() - 3);
+    if (timeframe === "6M") start.setMonth(start.getMonth() - 6);
+    if (timeframe === "1Y") start.setFullYear(start.getFullYear() - 1);
+    if (timeframe === "3Y") start.setFullYear(start.getFullYear() - 3);
+    if (timeframe === "5Y") start.setFullYear(start.getFullYear() - 5);
+    if (timeframe === "10Y") start.setFullYear(start.getFullYear() - 10);
+    return rawOhlc.filter((p) => new Date(p.time) >= start);
+  }, [rawOhlc, timeframe]);
 
-  const navByTime = useMemo(() => {
-    return new Map(filteredNav.map((p) => [p.nav_date, p.nav]));
-  }, [filteredNav]);
+  const chartWindow = useMemo(() => {
+    if (filteredOhlc.length)
+      return { start: filteredOhlc[0].time, end: filteredOhlc[filteredOhlc.length - 1].time };
+    if (filteredNav.length)
+      return { start: filteredNav[0].nav_date, end: filteredNav[filteredNav.length - 1].nav_date };
+    return null;
+  }, [filteredOhlc, filteredNav]);
+
+  const filteredIndicators = useMemo(() => {
+    if (!indicators.length || !chartWindow) return [];
+    const start = new Date(chartWindow.start);
+    const end = new Date(chartWindow.end);
+    return indicators.filter((r) => {
+      const d = new Date(r.time);
+      return !Number.isNaN(d.getTime()) && d >= start && d <= end;
+    });
+  }, [indicators, chartWindow]);
+
+  const chartTimes = useMemo(() => {
+    if (filteredOhlc.length) return filteredOhlc.map((o) => o.time as Time);
+    return filteredNav.map((p) => p.nav_date as Time);
+  }, [filteredOhlc, filteredNav]);
+
+  const priceByTime = useMemo(() => {
+    const m = new Map<string, number>();
+    if (filteredOhlc.length) for (const o of filteredOhlc) m.set(String(o.time), o.close);
+    else for (const p of filteredNav) m.set(String(p.nav_date), p.nav);
+    return m;
+  }, [filteredOhlc, filteredNav]);
 
   const indByTime = useMemo(() => {
     return new Map(filteredIndicators.map((r) => [r.time, r]));
@@ -166,18 +213,21 @@ export default function MFSchemeDetailPage() {
     };
   }, []);
 
-  // Set chart data
+  // Set chart data (resampled close when OHLC available)
   useEffect(() => {
     if (!seriesRef.current) return;
-    if (!filteredNav.length) return;
-    const data = filteredNav.map((p) => ({ time: p.nav_date as Time, value: p.nav }));
+    if (!chartTimes.length) return;
+    const data =
+      filteredOhlc.length > 0
+        ? filteredOhlc.map((o) => ({ time: o.time as Time, value: o.close }))
+        : filteredNav.map((p) => ({ time: p.nav_date as Time, value: p.nav }));
     seriesRef.current.setData(data);
     chartApi.current?.timeScale().fitContent();
-  }, [filteredNav]);
+  }, [chartTimes, filteredOhlc, filteredNav]);
 
   useEffect(() => {
-    if (!filteredNav.length) return;
-    const times = filteredNav.map((p) => p.nav_date as Time);
+    if (!chartTimes.length) return;
+    const times = chartTimes;
     const byTime = new Map(filteredIndicators.map((r) => [r.time, r]));
 
     if (ema20Ref.current) {
@@ -207,14 +257,14 @@ export default function MFSchemeDetailPage() {
         ema50Ref.current.setData([] as any);
       }
     }
-  }, [filteredNav, filteredIndicators, activeInds]);
+  }, [chartTimes, filteredIndicators, activeInds]);
 
   useEffect(() => {
     if (!markersRef.current) return;
     const markers: SeriesMarker<Time>[] = [];
 
-    const min = filteredNav.length ? filteredNav[0].nav_date : null;
-    const max = filteredNav.length ? filteredNav[filteredNav.length - 1].nav_date : null;
+    const min = chartWindow?.start ?? (filteredNav.length ? filteredNav[0].nav_date : null);
+    const max = chartWindow?.end ?? (filteredNav.length ? filteredNav[filteredNav.length - 1].nav_date : null);
 
     for (const s of signals) {
       if (!s.nav_date) continue;
@@ -252,7 +302,7 @@ export default function MFSchemeDetailPage() {
       });
     }
     markersRef.current.setMarkers(markers);
-  }, [signals, patterns, filteredNav]);
+  }, [signals, patterns, filteredNav, chartWindow]);
 
   useEffect(() => {
     if (!showRsi) {
@@ -289,16 +339,16 @@ export default function MFSchemeDetailPage() {
   useEffect(() => {
     if (!rsiSeriesRef.current) return;
     if (!showRsi) return;
-    if (!filteredNav.length) return;
+    if (!chartTimes.length) return;
     const byTime = new Map(filteredIndicators.map((r) => [r.time, r]));
-    const data = filteredNav
-      .map((p) => {
-        const r = byTime.get(p.nav_date);
-        return r?.rsi != null ? { time: p.nav_date as Time, value: r.rsi } : null;
+    const data = chartTimes
+      .map((t) => {
+        const r = byTime.get(String(t));
+        return r?.rsi != null ? { time: t, value: r.rsi } : null;
       })
       .filter(Boolean) as any;
     rsiSeriesRef.current.setData(data);
-  }, [filteredNav, filteredIndicators, showRsi]);
+  }, [chartTimes, filteredIndicators, showRsi]);
 
   useEffect(() => {
     if (!showMacd) {
@@ -358,7 +408,7 @@ export default function MFSchemeDetailPage() {
       if (cur && (cur as any).from != null && (cur as any).to != null) onRange(cur as any);
     } catch {}
     return () => ts.unsubscribeVisibleLogicalRangeChange(onRange);
-  }, [showRsi, showMacd]);
+  }, [showRsi, showMacd, chartTimes.length, barTf]);
 
   // Sync crosshair across panes so the vertical marker aligns (main chart drives).
   const syncingCrosshair = useRef(false);
@@ -435,8 +485,8 @@ export default function MFSchemeDetailPage() {
           main.clearCrosshairPosition();
           return;
         }
-        const navVal = navByTime.get(t);
-        if (navVal != null) main.setCrosshairPosition(navVal, t as any, mainSeries as any);
+        const px = priceByTime.get(t);
+        if (px != null) main.setCrosshairPosition(px, t as any, mainSeries as any);
       } finally {
         syncingCrosshair.current = false;
       }
@@ -452,8 +502,8 @@ export default function MFSchemeDetailPage() {
           main.clearCrosshairPosition();
           return;
         }
-        const navVal = navByTime.get(t);
-        if (navVal != null) main.setCrosshairPosition(navVal, t as any, mainSeries as any);
+        const px = priceByTime.get(t);
+        if (px != null) main.setCrosshairPosition(px, t as any, mainSeries as any);
       } finally {
         syncingCrosshair.current = false;
       }
@@ -467,28 +517,28 @@ export default function MFSchemeDetailPage() {
       if (rsiChart) rsiChart.unsubscribeCrosshairMove(onRsiMove);
       if (macdChart) macdChart.unsubscribeCrosshairMove(onMacdMove);
     };
-  }, [indByTime, navByTime, showRsi, showMacd]);
+  }, [indByTime, priceByTime, showRsi, showMacd]);
 
   useEffect(() => {
     if (!macdSeriesRef.current || !macdSignalRef.current) return;
     if (!showMacd) return;
-    if (!filteredNav.length) return;
+    if (!chartTimes.length) return;
     const byTime = new Map(filteredIndicators.map((r) => [r.time, r]));
-    const macdData = filteredNav
-      .map((p) => {
-        const r = byTime.get(p.nav_date);
-        return r?.macd != null ? { time: p.nav_date as Time, value: r.macd } : null;
+    const macdData = chartTimes
+      .map((t) => {
+        const r = byTime.get(String(t));
+        return r?.macd != null ? { time: t, value: r.macd } : null;
       })
       .filter(Boolean) as any;
-    const sigData = filteredNav
-      .map((p) => {
-        const r = byTime.get(p.nav_date);
-        return r?.macd_signal != null ? { time: p.nav_date as Time, value: r.macd_signal } : null;
+    const sigData = chartTimes
+      .map((t) => {
+        const r = byTime.get(String(t));
+        return r?.macd_signal != null ? { time: t, value: r.macd_signal } : null;
       })
       .filter(Boolean) as any;
     macdSeriesRef.current.setData(macdData);
     macdSignalRef.current.setData(sigData);
-  }, [filteredNav, filteredIndicators, showMacd]);
+  }, [chartTimes, filteredIndicators, showMacd]);
 
   const topHoldings = useMemo(() => {
     const hs = holdings?.holdings || [];
@@ -509,23 +559,50 @@ export default function MFSchemeDetailPage() {
 
   const [linksOpen, setLinksOpen] = useState(false);
   const [vrUrl, setVrUrl] = useState("");
+  const [vrFundId, setVrFundId] = useState("");
   const [msUrl, setMsUrl] = useState("");
   const [msId, setMsId] = useState("");
+  const [yahooSymbol, setYahooSymbol] = useState("");
+  const [yahooUrl, setYahooUrl] = useState("");
   const [savingLinks, setSavingLinks] = useState(false);
+
+  const externalSiteSearch = (siteHost: string) => {
+    const q = `${scheme?.scheme_name ?? `Scheme ${schemeCode}`} ${scheme?.amc_name ?? ""}`.trim();
+    return `https://www.google.com/search?q=${encodeURIComponent(`site:${siteHost} ${q}`)}`;
+  };
 
   useEffect(() => {
     setVrUrl(scheme?.valueresearch_url ?? "");
+    setVrFundId(scheme?.value_research_fund_id != null ? String(scheme.value_research_fund_id) : "");
     setMsUrl(scheme?.morningstar_url ?? "");
     setMsId(scheme?.morningstar_sec_id ?? "");
-  }, [scheme?.valueresearch_url, scheme?.morningstar_url, scheme?.morningstar_sec_id]);
+    setYahooSymbol(scheme?.yahoo_finance_symbol ?? "");
+    setYahooUrl(scheme?.yahoo_finance_url ?? "");
+  }, [
+    scheme?.valueresearch_url,
+    scheme?.value_research_fund_id,
+    scheme?.morningstar_url,
+    scheme?.morningstar_sec_id,
+    scheme?.yahoo_finance_symbol,
+    scheme?.yahoo_finance_url,
+  ]);
 
   const saveLinks = async () => {
     setSavingLinks(true);
     try {
+      const vrIdTrim = vrFundId.trim();
+      let vrIdNum: number | null = null;
+      if (vrIdTrim !== "") {
+        const n = parseInt(vrIdTrim, 10);
+        vrIdNum = Number.isFinite(n) ? n : null;
+      }
       const res = await mfApi.updateSchemeLinks(schemeCode, {
-        valueresearch_url: vrUrl || null,
-        morningstar_url: msUrl || null,
-        morningstar_sec_id: msId || null,
+        valueresearch_url: vrUrl.trim() || null,
+        morningstar_url: msUrl.trim() || null,
+        yahoo_finance_url: yahooUrl.trim() || null,
+        morningstar_sec_id: msId.trim() || null,
+        value_research_fund_id: vrIdNum,
+        yahoo_finance_symbol: yahooSymbol.trim() || null,
       });
       setScheme(res);
       toast.success("Links saved");
@@ -616,7 +693,12 @@ export default function MFSchemeDetailPage() {
               </DialogHeader>
               <div className="space-y-3">
                 <div className="space-y-1.5">
-                  <Label>ValueResearch URL</Label>
+                  <Label>Value Research fund id</Label>
+                  <Input value={vrFundId} onChange={(e) => setVrFundId(e.target.value)} placeholder="e.g. 15822" />
+                  <p className="text-[11px] text-muted-foreground">Numeric id from valueresearchonline.com fund URLs (stable deep link).</p>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>ValueResearch URL (optional override)</Label>
                   <Input value={vrUrl} onChange={(e) => setVrUrl(e.target.value)} placeholder="https://..." />
                 </div>
                 <div className="space-y-1.5">
@@ -625,7 +707,15 @@ export default function MFSchemeDetailPage() {
                 </div>
                 <div className="space-y-1.5">
                   <Label>Morningstar SECID (optional)</Label>
-                  <Input value={msId} onChange={(e) => setMsId(e.target.value)} placeholder="F00000..." />
+                  <Input value={msId} onChange={(e) => setMsId(e.target.value)} placeholder="f0gbr06s37" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Yahoo Finance symbol</Label>
+                  <Input value={yahooSymbol} onChange={(e) => setYahooSymbol(e.target.value)} placeholder="e.g. 0P0000XWAB.BO" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Yahoo quote URL (optional override)</Label>
+                  <Input value={yahooUrl} onChange={(e) => setYahooUrl(e.target.value)} placeholder="https://finance.yahoo.com/quote/…" />
                 </div>
                 <div className="flex justify-end gap-2 pt-2">
                   <Button variant="outline" onClick={() => setLinksOpen(false)}>Cancel</Button>
@@ -644,6 +734,9 @@ export default function MFSchemeDetailPage() {
               <Button variant="outline" size="sm">Morningstar</Button>
             </Link>
           ) : null}
+          <Link href={scheme?.yahoo_finance_url ?? externalSiteSearch("finance.yahoo.com")} target="_blank">
+            <Button variant="outline" size="sm">Yahoo Finance</Button>
+          </Link>
           <Link href={pdfHref} target="_blank">
             <Button size="sm">
               <Download className="h-3 w-3 mr-1" /> 1-Pager PDF
@@ -656,8 +749,37 @@ export default function MFSchemeDetailPage() {
         <Card className="lg:col-span-2">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm">NAV</CardTitle>
+            {scheme?.nav_days_in_db != null && scheme.nav_days_in_db > 0 ? (
+              <p className="text-xs text-muted-foreground font-normal mt-1">
+                {scheme.nav_days_in_db.toLocaleString()} day(s) in database
+                {scheme.nav_date_min && scheme.nav_date_max
+                  ? ` (${scheme.nav_date_min} → ${scheme.nav_date_max})`
+                  : null}
+                {nav.length >= 5000 && scheme.nav_days_in_db > 5000
+                  ? " — chart uses the most recent 5,000 points."
+                  : null}
+              </p>
+            ) : null}
           </CardHeader>
           <CardContent>
+            {scheme?.nav_days_in_db != null && scheme.nav_days_in_db < 30 ? (
+              <div
+                className="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-100/90"
+                role="status"
+              >
+                <p className="font-medium text-amber-50">Sparse NAV history</p>
+                <p className="mt-1 text-xs leading-relaxed opacity-95">
+                  This chart reads daily NAV from the database (<code className="rounded bg-black/30 px-1">mf_nav_daily</code>
+                  ). Only {scheme.nav_days_in_db} row(s) exist for AMFI {schemeCode}. The Kaggle historical load does not run on deploy — run{" "}
+                  <code className="rounded bg-black/30 px-1">backend/scripts/mf_seed_historical.py</code> against{" "}
+                  <strong>this</strong> Postgres (see script docstring), then{" "}
+                  <Link href="/mf/pipelines" className="underline font-medium text-amber-50">
+                    MF → Pipeline runs
+                  </Link>
+                  : Sync priority AMC watchlist, then Run NAV. Daily AMFI alone only adds the latest file date per ingest.
+                </p>
+              </div>
+            ) : null}
             <div className="flex flex-col gap-2 mb-2">
               <div className="flex flex-wrap items-center gap-2">
                 {(["1M", "3M", "6M", "1Y", "3Y", "5Y", "10Y", "MAX"] as const).map((tf) => (
@@ -668,6 +790,24 @@ export default function MFSchemeDetailPage() {
                     onClick={() => setTimeframe(tf)}
                   >
                     {tf}
+                  </Button>
+                ))}
+                <div className="w-px h-6 bg-border/60 mx-1" />
+                {(
+                  [
+                    { value: "1d" as const, label: "D" },
+                    { value: "1w" as const, label: "W" },
+                    { value: "1M" as const, label: "M" },
+                  ] as const
+                ).map((b) => (
+                  <Button
+                    key={b.value}
+                    size="sm"
+                    variant={barTf === b.value ? "secondary" : "outline"}
+                    title="Bar timeframe (NAV resampling)"
+                    onClick={() => setBarTf(b.value)}
+                  >
+                    {b.label}
                   </Button>
                 ))}
                 <div className="w-px h-6 bg-border/60 mx-1" />

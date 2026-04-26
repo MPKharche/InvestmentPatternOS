@@ -11,6 +11,10 @@ settings = get_settings()
 
 def _has(mod: str) -> bool:
     try:
+        if mod == "vectorbt":
+            from app.compat.vectorbt_shim import apply_vectorbt_ptb_compat
+
+            apply_vectorbt_ptb_compat()
         __import__(mod)
         return True
     except Exception:

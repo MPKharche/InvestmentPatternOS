@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 import httpx
-from sqlalchemy import and_, or_, text
+from sqlalchemy import and_, exists, func, or_, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -58,20 +58,135 @@ CURATED_NAME_PATTERNS: list[str] = [
     "%GOLD%",
 ]
 
-# Initial scope (user-requested): focus ingestion/holdings on selected AMCs.
-# Defaults: Direct + Growth; equity-only for most, all (Direct/Growth) for ICICI.
+# Ingestion / watchlist: ICICI Prudential, HDFC, Axis, Mirae Asset — equity + Direct + Growth only.
+# Regular plans and IDCW (income distribution) options stay out of scope.
 AMC_SCOPE_EQUITY_NAME_PATTERNS: list[str] = [
-    "%Aditya Birla%",
-    "%HDFC%",
-    "%Nippon%",
-    "%UTI%",
-    "%Mirae%",
-    "%Axis%",
-    "%SBI%",
-]
-AMC_SCOPE_ALL_NAME_PATTERNS: list[str] = [
     "%ICICI%Prudential%",
+    "%HDFC%",
+    "%Axis%",
+    "%Mirae%",
 ]
+# Previously used to widen ICICI to non-equity; no longer used (keep empty).
+AMC_SCOPE_ALL_NAME_PATTERNS: list[str] = []
+
+
+def _mf_direct_growth_criterion():
+    """Direct + Growth: prefer structured fields; fall back to scheme name heuristics."""
+    return or_(
+        and_(MFScheme.plan_type.ilike("%direct%"), MFScheme.option_type.ilike("%growth%")),
+        and_(MFScheme.scheme_name.ilike("%direct%"), MFScheme.scheme_name.ilike("%growth%")),
+        # AMFI / vendor truncation (seen as "... - Direc" at line end)
+        and_(MFScheme.scheme_name.ilike("%direc%"), MFScheme.scheme_name.ilike("%growth%")),
+    )
+
+
+def _mf_equity_focus_criterion():
+    """Equity-focused universe (category + common open-ended equity name tokens)."""
+    debtish = or_(
+        MFScheme.category.ilike("%debt%"),
+        MFScheme.category.ilike("%liquid%"),
+        MFScheme.category.ilike("%money market%"),
+        MFScheme.category.ilike("%gilt%"),
+        MFScheme.category.ilike("%overnight%"),
+        MFScheme.scheme_name.ilike("%liquid fund%"),
+        MFScheme.scheme_name.ilike("%money market%"),
+        MFScheme.scheme_name.ilike("%gilt fund%"),
+        MFScheme.scheme_name.ilike("%banking and psu debt%"),
+        MFScheme.scheme_name.ilike("%corporate bond%"),
+    )
+    equityish = or_(
+        MFScheme.category.ilike("%equity%"),
+        MFScheme.category.ilike("%elss%"),
+        MFScheme.scheme_name.ilike("%equity%"),
+        MFScheme.scheme_name.ilike("%elss%"),
+        MFScheme.scheme_name.ilike("%flexi cap%"),
+        MFScheme.scheme_name.ilike("%flexicap%"),
+        MFScheme.scheme_name.ilike("%large cap%"),
+        MFScheme.scheme_name.ilike("%mid cap%"),
+        MFScheme.scheme_name.ilike("%small cap%"),
+        MFScheme.scheme_name.ilike("%multi cap%"),
+        MFScheme.scheme_name.ilike("%focused equity%"),
+        MFScheme.scheme_name.ilike("%value fund%"),
+        MFScheme.scheme_name.ilike("%contra%"),
+        MFScheme.scheme_name.ilike("%tax saver%"),
+        MFScheme.scheme_name.ilike("% nifty %"),
+        MFScheme.scheme_name.ilike("%sensex%"),
+        MFScheme.scheme_name.ilike("%index fund%"),
+        MFScheme.scheme_name.ilike("%etf%"),
+    )
+    return and_(~debtish, equityish)
+
+
+def _mf_priority_amc_criterion():
+    """
+    Target AMCs: ICICI Prudential, HDFC, Axis, Mirae Asset.
+
+    Match on `amc_name` when present (CSV / enrichment), and on `scheme_name` because AMFI NAVAll
+    lines usually embed the AMC at the start of the scheme name before the dash.
+    """
+    amc = or_(*[MFScheme.amc_name.ilike(p) for p in AMC_SCOPE_EQUITY_NAME_PATTERNS])
+    sn = MFScheme.scheme_name
+    by_scheme_name = or_(
+        sn.ilike("%ICICI%Prudential%"),
+        sn.ilike("%HDFC%Mutual%Fund%"),
+        sn.ilike("%Axis%Mutual%Fund%"),
+        sn.ilike("%Mirae%Asset%"),
+    )
+    return or_(amc, by_scheme_name)
+
+
+def _mf_excluded_non_purview_criterion():
+    """Regular plans and IDCW / dividend-style options are out of scope."""
+    regular = or_(
+        MFScheme.plan_type.ilike("%regular%"),
+        MFScheme.scheme_name.ilike("%regular plan%"),
+        MFScheme.scheme_name.ilike("% - regular %"),
+        MFScheme.scheme_name.ilike("%(regular)%"),
+        MFScheme.scheme_name.ilike("%regular -%"),
+    )
+    idcw = or_(
+        MFScheme.scheme_name.ilike("%idcw%"),
+        MFScheme.scheme_name.ilike("%icdw%"),  # common typo
+        MFScheme.option_type.ilike("%idcw%"),
+    )
+    return and_(~regular, ~idcw)
+
+
+def mf_equity_direct_growth_scope():
+    """
+    Active schemes that qualify for outbound MF ingestion:
+
+    - AMC: ICICI Prudential, HDFC, Axis, Mirae Asset (name match on amc_name)
+    - Equity (category / name heuristics)
+    - Direct + Growth (plan fields or name heuristics)
+    - Excludes Regular plans and IDCW / obvious dividend options
+    """
+    return and_(
+        MFScheme.is_active.is_(True),
+        _mf_priority_amc_criterion(),
+        _mf_direct_growth_criterion(),
+        _mf_equity_focus_criterion(),
+        _mf_excluded_non_purview_criterion(),
+    )
+
+
+def sync_priority_amc_equity_direct_growth_monitored(db: Session) -> dict[str, Any]:
+    """
+    Align monitored flags with mf_equity_direct_growth_scope(): promote all in-scope,
+    demote everything else (idempotent).
+    """
+    demoted = (
+        db.query(MFScheme)
+        .filter(MFScheme.monitored.is_(True), ~mf_equity_direct_growth_scope())
+        .update({MFScheme.monitored: False}, synchronize_session=False)
+    )
+    promoted = (
+        db.query(MFScheme)
+        .filter(MFScheme.monitored.is_(False), mf_equity_direct_growth_scope())
+        .update({MFScheme.monitored: True}, synchronize_session=False)
+    )
+    db.commit()
+    return {"demoted": int(demoted or 0), "promoted": int(promoted or 0)}
 
 
 def _get_cursor(
@@ -135,12 +250,12 @@ def _set_cursor(
 
 def ensure_amc_scoped_watchlist(db: Session) -> dict[str, Any]:
     """
-    Idempotently seed a monitored universe for the initial AMC scope.
+    Fallback watchlist when the global priority scope did not match any rows yet.
 
-    - Equity-only for ABSL/HDFC/Nippon/UTI/Mirae/Axis/SBI (Direct+Growth)
-    - All (Direct+Growth) for ICICI Prudential
+    Same rules as mf_equity_direct_growth_scope (4 AMCs, equity, Direct Growth,
+    excludes Regular / IDCW).
 
-    This runs only when there are currently zero monitored schemes.
+    Runs only when there are currently zero monitored schemes.
     """
     monitored_count = db.query(MFScheme).filter_by(monitored=True).count()
     if monitored_count > 0:
@@ -149,30 +264,35 @@ def ensure_amc_scoped_watchlist(db: Session) -> dict[str, Any]:
     if db.query(MFScheme).count() == 0:
         return {"skipped": True, "reason": "scheme master empty", "updated": 0}
 
-    direct_growth = or_(
-        and_(MFScheme.plan_type.ilike("%direct%"), MFScheme.option_type.ilike("%growth%")),
-        and_(MFScheme.scheme_name.ilike("%direct%"), MFScheme.scheme_name.ilike("%growth%")),
+    res = (
+        db.query(MFScheme)
+        .filter(mf_equity_direct_growth_scope())
+        .update({MFScheme.monitored: True}, synchronize_session=False)
     )
-
-    equity_like = or_(
-        MFScheme.category.ilike("%equity%"),
-        MFScheme.category.ilike("%elss%"),
-        MFScheme.scheme_name.ilike("%equity%"),
-        MFScheme.scheme_name.ilike("%elss%"),
-    )
-
-    updated = 0
-
-    eq_amc = or_(*[MFScheme.amc_name.ilike(p) for p in AMC_SCOPE_EQUITY_NAME_PATTERNS])
-    q1 = db.query(MFScheme).filter(MFScheme.is_active.is_(True), direct_growth, eq_amc, equity_like)
-    updated += int(q1.update({MFScheme.monitored: True}, synchronize_session=False) or 0)
-
-    all_amc = or_(*[MFScheme.amc_name.ilike(p) for p in AMC_SCOPE_ALL_NAME_PATTERNS])
-    q2 = db.query(MFScheme).filter(MFScheme.is_active.is_(True), direct_growth, all_amc)
-    updated += int(q2.update({MFScheme.monitored: True}, synchronize_session=False) or 0)
-
     db.commit()
-    return {"skipped": False, "updated": updated}
+    return {"skipped": False, "updated": int(res or 0)}
+
+
+def ensure_equity_direct_growth_watchlist(db: Session) -> dict[str, Any]:
+    """
+    First-line watchlist: ICICI / HDFC / Axis / Mirae equity + Direct + Growth (see mf_equity_direct_growth_scope).
+
+    Runs only when nothing is monitored yet (same guard as other seeders).
+    """
+    monitored_count = db.query(MFScheme).filter_by(monitored=True).count()
+    if monitored_count > 0:
+        return {"skipped": True, "reason": "monitored already configured", "updated": 0}
+
+    if db.query(MFScheme).count() == 0:
+        return {"skipped": True, "reason": "scheme master empty", "updated": 0}
+
+    res = (
+        db.query(MFScheme)
+        .filter(mf_equity_direct_growth_scope())
+        .update({MFScheme.monitored: True}, synchronize_session=False)
+    )
+    db.commit()
+    return {"skipped": False, "updated": int(res or 0)}
 
 
 def _run_start(db: Session, run_type: str) -> MFIngestionRun:
@@ -247,7 +367,13 @@ def ensure_curated_watchlist(db: Session) -> dict[str, Any]:
 
     total_schemes = db.query(MFScheme).count()
 
-    # Prefer AMC-scoped universe for the initial rollout (fast, no outbound calls).
+    # Prefer equity + Direct Growth universe first (keeps outbound volume bounded).
+    if total_schemes > 0:
+        eg = ensure_equity_direct_growth_watchlist(db)
+        if not eg.get("skipped") and int(eg.get("updated") or 0) > 0:
+            return {"skipped": False, "created": 0, "updated": int(eg["updated"]), "scope": "equity_direct_growth"}
+
+    # Fallback: AMC-scoped seed (still Direct Growth + equity-like filters inside).
     if total_schemes > 0:
         scope_stats = ensure_amc_scoped_watchlist(db)
         if not scope_stats.get("skipped") and int(scope_stats.get("updated") or 0) > 0:
@@ -266,7 +392,7 @@ def ensure_curated_watchlist(db: Session) -> dict[str, Any]:
                 break
             rows = (
                 db.query(MFScheme.scheme_code)
-                .filter(MFScheme.scheme_name.ilike(pat))
+                .filter(MFScheme.scheme_name.ilike(pat), mf_equity_direct_growth_scope())
                 .order_by(MFScheme.scheme_code.asc())
                 .limit(max(0, target - len(codes)))
                 .all()
@@ -312,17 +438,20 @@ def ensure_curated_watchlist(db: Session) -> dict[str, Any]:
                     benchmark=ext.benchmark,
                     latest_nav=ext.nav,
                     latest_nav_date=(datetime.fromisoformat(ext.nav_date).date() if ext.nav_date else None),
-                    monitored=True,
+                    monitored=False,
                 )
                 db.add(s)
+                db.flush()
+                if db.query(MFScheme.scheme_code).filter(MFScheme.scheme_code == code, mf_equity_direct_growth_scope()).first():
+                    s.monitored = True
                 created += 1
             else:
-                s = MFScheme(scheme_code=code, scheme_name=f"Scheme {code}", monitored=True)
-                db.add(s)
+                db.add(MFScheme(scheme_code=code, scheme_name=f"Scheme {code}", monitored=False))
                 created += 1
         else:
-            s.monitored = True
-            updated += 1
+            if db.query(MFScheme.scheme_code).filter(MFScheme.scheme_code == s.scheme_code, mf_equity_direct_growth_scope()).first():
+                s.monitored = True
+                updated += 1
         db.commit()
 
     return {"skipped": False, "created": created, "updated": updated, "target": target}
@@ -334,7 +463,7 @@ def enrich_monitored_schemes_mfdata(db: Session, *, max_per_run: int = 200) -> d
 
     Pulls:
     - risk_label, expense_ratio, AUM, benchmark, launch_date
-    - morningstar_sec_id
+    - morningstar_sec_id, value_research_fund_id, yahoo_finance_symbol
     - returns + ratios JSON blobs (for UI tiles)
     """
     if not settings.MF_INGESTION_ENABLED:
@@ -344,7 +473,7 @@ def enrich_monitored_schemes_mfdata(db: Session, *, max_per_run: int = 200) -> d
     cutoff = now - timedelta(hours=24)
     q = (
         db.query(MFScheme)
-        .filter(MFScheme.monitored.is_(True))
+        .filter(MFScheme.monitored.is_(True), mf_equity_direct_growth_scope())
         .filter(or_(MFScheme.mfdata_fetched_at.is_(None), MFScheme.mfdata_fetched_at < cutoff))
         .order_by(MFScheme.mfdata_fetched_at.asc().nullsfirst(), MFScheme.scheme_code.asc())
         .limit(max(1, min(int(max_per_run), 2000)))
@@ -383,6 +512,10 @@ def enrich_monitored_schemes_mfdata(db: Session, *, max_per_run: int = 200) -> d
                 pass
         if ext.morningstar_sec_id and not s.morningstar_sec_id:
             s.morningstar_sec_id = ext.morningstar_sec_id
+        if ext.value_research_fund_id is not None and s.value_research_fund_id is None:
+            s.value_research_fund_id = ext.value_research_fund_id
+        if ext.yahoo_finance_symbol and not s.yahoo_finance_symbol:
+            s.yahoo_finance_symbol = ext.yahoo_finance_symbol
         if ext.returns is not None:
             s.returns_json = ext.returns
         if ext.ratios is not None:
@@ -394,8 +527,119 @@ def enrich_monitored_schemes_mfdata(db: Session, *, max_per_run: int = 200) -> d
         db.add(s)
         db.commit()
         updated += 1
+        time.sleep(max(0.0, float(settings.MF_ENRICH_INTER_SCHEME_SLEEP_S)))
 
     return {"schemes_considered": len(rows), "updated": updated, "failed": failed}
+
+
+def enrich_schemes_mfdata_batch(
+    db: Session, *, monitored_only: bool = True, max_per_run: int = 200
+) -> dict[str, Any]:
+    """
+    Like enrich_monitored_schemes_mfdata, but optionally includes every scheme row
+    missing/stale mfdata (rate-limited; use small max_per_run for long jobs).
+    """
+    if not settings.MF_INGESTION_ENABLED:
+        return {"skipped": True, "reason": "MF_INGESTION_ENABLED=false"}
+
+    now = datetime.utcnow()
+    cutoff = now - timedelta(hours=24)
+    q = db.query(MFScheme).filter(mf_equity_direct_growth_scope()).filter(
+        or_(MFScheme.mfdata_fetched_at.is_(None), MFScheme.mfdata_fetched_at < cutoff)
+    )
+    if monitored_only:
+        q = q.filter(MFScheme.monitored.is_(True))
+    q = q.order_by(MFScheme.mfdata_fetched_at.asc().nullsfirst(), MFScheme.scheme_code.asc()).limit(
+        max(1, min(int(max_per_run), 5000))
+    )
+    rows = q.all()
+    updated = 0
+    failed = 0
+
+    for s in rows:
+        with task(db, run_id=None, provider="mfdata", endpoint_class="scheme", scheme_code=s.scheme_code) as t:
+            ext = fetch_scheme(int(s.scheme_code), task=t)
+        if not ext:
+            failed += 1
+            continue
+
+        s.scheme_name = ext.name or s.scheme_name
+        s.family_id = ext.family_id or s.family_id
+        s.family_name = ext.family_name or s.family_name
+        s.amc_name = ext.amc_name or s.amc_name
+        s.amc_slug = ext.amc_slug or s.amc_slug
+        s.category = ext.category or s.category
+        s.plan_type = ext.plan_type or s.plan_type
+        s.option_type = ext.option_type or s.option_type
+        s.risk_label = ext.risk_label or s.risk_label
+        s.expense_ratio = ext.expense_ratio if ext.expense_ratio is not None else s.expense_ratio
+        s.aum = ext.aum if ext.aum is not None else s.aum
+        s.min_sip = ext.min_sip if ext.min_sip is not None else s.min_sip
+        s.min_lumpsum = ext.min_lumpsum if ext.min_lumpsum is not None else s.min_lumpsum
+        s.exit_load = ext.exit_load or s.exit_load
+        s.benchmark = ext.benchmark or s.benchmark
+        if ext.launch_date and not s.launch_date:
+            try:
+                s.launch_date = datetime.fromisoformat(ext.launch_date).date()
+            except Exception:
+                pass
+        if ext.morningstar_sec_id and not s.morningstar_sec_id:
+            s.morningstar_sec_id = ext.morningstar_sec_id
+        if ext.value_research_fund_id is not None and s.value_research_fund_id is None:
+            s.value_research_fund_id = ext.value_research_fund_id
+        if ext.yahoo_finance_symbol and not s.yahoo_finance_symbol:
+            s.yahoo_finance_symbol = ext.yahoo_finance_symbol
+        if ext.returns is not None:
+            s.returns_json = ext.returns
+        if ext.ratios is not None:
+            s.ratios_json = ext.ratios
+
+        s.mfdata_fetched_at = now
+        if ensure_scheme_links(s):
+            pass
+        db.add(s)
+        db.commit()
+        updated += 1
+        time.sleep(max(0.0, float(settings.MF_ENRICH_INTER_SCHEME_SLEEP_S)))
+
+    return {"schemes_considered": len(rows), "updated": updated, "failed": failed, "monitored_only": monitored_only}
+
+
+def mark_monitored_for_schemes_with_nav(db: Session, *, limit: int | None = None) -> dict[str, Any]:
+    """
+    Promote schemes that already have NAV rows and match the priority AMC equity Direct Growth scope.
+    """
+    cap = settings.MF_MARK_MONITORED_NAV_LIMIT if limit is None else int(limit)
+    nav_exists = exists().where(MFNavDaily.scheme_code == MFScheme.scheme_code)
+    q = (
+        db.query(MFScheme.scheme_code)
+        .filter(MFScheme.monitored.is_(False), mf_equity_direct_growth_scope(), nav_exists)
+        .order_by(MFScheme.scheme_code.asc())
+    )
+    if cap != 0:
+        q = q.limit(max(1, int(cap)))
+    codes = [int(r[0]) for r in q.all()]
+    if not codes:
+        db.commit()
+        return {"updated_rows": 0, "limit_applied": cap}
+    res = (
+        db.query(MFScheme)
+        .filter(MFScheme.scheme_code.in_(codes))
+        .update({MFScheme.monitored: True}, synchronize_session=False)
+    )
+    db.commit()
+    return {"updated_rows": int(res or 0), "limit_applied": cap}
+
+
+def demote_monitored_outside_equity_direct_growth(db: Session) -> dict[str, Any]:
+    """Clear monitored for rows outside mf_equity_direct_growth_scope()."""
+    res = (
+        db.query(MFScheme)
+        .filter(MFScheme.monitored.is_(True), ~mf_equity_direct_growth_scope())
+        .update({MFScheme.monitored: False}, synchronize_session=False)
+    )
+    db.commit()
+    return {"updated_rows": int(res or 0)}
 
 
 def _chunk(items: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
@@ -472,6 +716,8 @@ def ingest_amfi_navall(db: Session) -> dict[str, Any]:
 
         # If watchlist isn't configured yet, seed a curated list from the freshly-upserted scheme master.
         ensure_curated_watchlist(db)
+        # Align monitored flags with ICICI/HDFC/Axis/Mirae + equity + Direct Growth (excl. Regular / IDCW).
+        sync_stats = sync_priority_amc_equity_direct_growth_monitored(db)
 
         # Opportunistic enrichment for monitored schemes (cached 24h; safe/rate-limited).
         enrich_stats = enrich_monitored_schemes_mfdata(db, max_per_run=200)
@@ -483,7 +729,7 @@ def ingest_amfi_navall(db: Session) -> dict[str, Any]:
         metrics_count = 0
         signals_count = 0
         if latest_date:
-            monitored = db.query(MFScheme).filter_by(monitored=True).all()
+            monitored = db.query(MFScheme).filter(MFScheme.monitored.is_(True), mf_equity_direct_growth_scope()).all()
             peer_cache: dict[str, float | None] = {}
             for s in monitored:
                 m = compute_nav_metrics(db, s.scheme_code, latest_date)
@@ -506,6 +752,7 @@ def ingest_amfi_navall(db: Session) -> dict[str, Any]:
             "metrics": metrics_count,
             "signals": signals_count,
             "enrich": enrich_stats,
+            "watchlist_sync": sync_stats,
         }
         _run_finish(db, run, ok=True, stats=stats)
         return stats
@@ -524,7 +771,7 @@ def backfill_nav_history_mfapi(
     """
     Safe historical backfill using MFAPI (windowed, resumable).
 
-    - Strictly scoped to monitored schemes (avoid heavy crawling).
+    - Scoped to monitored schemes that match Equity + Direct Growth (see mf_equity_direct_growth_scope).
     - Idempotent inserts via PK (scheme_code, nav_date) + ON CONFLICT DO NOTHING.
     - Resumable using mf_ingestion_cursors (no "storm" on restart).
 
@@ -540,7 +787,13 @@ def backfill_nav_history_mfapi(
 
         ensure_curated_watchlist(db)
 
-        scheme_codes = [int(r[0]) for r in db.query(MFScheme.scheme_code).filter_by(monitored=True).order_by(MFScheme.scheme_code.asc()).all()]
+        scheme_codes = [
+            int(r[0])
+            for r in db.query(MFScheme.scheme_code)
+            .filter(MFScheme.monitored.is_(True), mf_equity_direct_growth_scope())
+            .order_by(MFScheme.scheme_code.asc())
+            .all()
+        ]
         if max_schemes is not None:
             scheme_codes = scheme_codes[: max(0, int(max_schemes))]
 
@@ -555,7 +808,7 @@ def backfill_nav_history_mfapi(
         processed_windows = 0
         skipped_retry_after = 0
 
-        max_windows_per_scheme_per_run = 5
+        max_windows_per_scheme_per_run = max(1, min(int(settings.MF_BACKFILL_MAX_WINDOWS_PER_SCHEME_PER_RUN), 12))
 
         for idx in range(next_index, len(scheme_codes)):
             code = scheme_codes[idx]
@@ -681,6 +934,7 @@ def backfill_nav_history_mfapi(
 
             processed_schemes += 1
             _set_cursor(db, provider="mfapi", endpoint_class="nav_history_global", cursor_json={"next_index": idx + 1, "start_date": start_date.isoformat()})
+            time.sleep(max(0.0, float(settings.MF_BACKFILL_INTER_SCHEME_SLEEP_S)))
 
         stats = {
             "schemes": len(scheme_codes),
@@ -698,11 +952,11 @@ def backfill_nav_history_mfapi(
         raise
 
 
-def gap_fill_nav_history_mfdata(db: Session, *, period: str = "max", max_schemes: int = 100) -> dict[str, Any]:
+def gap_fill_nav_history_mfdata(db: Session, *, period: str = "max", max_schemes: int | None = None) -> dict[str, Any]:
     """
     Fill missing NAV history points using mfdata.in /nav/history?period=max (approx last ~18y).
 
-    - Scoped to monitored schemes.
+    - Scoped to monitored schemes that match Equity + Direct Growth (see mf_equity_direct_growth_scope).
     - Idempotent inserts with ON CONFLICT DO NOTHING (do not overwrite AMFI/seed values).
     - Resumable via mf_ingestion_cursors (per scheme).
     """
@@ -715,11 +969,14 @@ def gap_fill_nav_history_mfdata(db: Session, *, period: str = "max", max_schemes
 
         ensure_curated_watchlist(db)
 
+        cap = int(max_schemes) if max_schemes is not None else int(settings.MF_GAPFILL_MAX_SCHEMES)
+        cap = max(1, min(cap, 50_000))
+
         schemes = (
             db.query(MFScheme)
-            .filter(MFScheme.monitored.is_(True))
+            .filter(MFScheme.monitored.is_(True), mf_equity_direct_growth_scope())
             .order_by(MFScheme.scheme_code.asc())
-            .limit(max(1, min(int(max_schemes), 2000)))
+            .limit(cap)
             .all()
         )
 
@@ -773,6 +1030,7 @@ def gap_fill_nav_history_mfdata(db: Session, *, period: str = "max", max_schemes
                 cursor_json={"fetched_at": datetime.utcnow().isoformat(), "period": period, "points": len(params)},
             )
             processed += 1
+            time.sleep(max(0.0, float(settings.MF_GAPFILL_INTER_SCHEME_SLEEP_S)))
 
         stats = {"processed": processed, "inserted": inserted, "skipped_cached": skipped_cached, "period": period}
         _run_finish(db, run, ok=True, stats=stats)
@@ -807,7 +1065,7 @@ def check_external_links(db: Session, *, limit: int | None = None) -> dict[str, 
         cap = int(limit or settings.MF_LINK_CHECK_DAILY_CAP)
         cap = max(1, min(cap, 2000))
 
-        q = db.query(MFScheme).filter(MFScheme.monitored.is_(True))
+        q = db.query(MFScheme).filter(MFScheme.monitored.is_(True), mf_equity_direct_growth_scope())
         q = q.order_by(MFScheme.updated_at.desc().nullslast())
         schemes = q.limit(cap).all()
 
@@ -819,6 +1077,8 @@ def check_external_links(db: Session, *, limit: int | None = None) -> dict[str, 
                 urls.append(("valueresearch", s.valueresearch_url))
             if s.morningstar_url:
                 urls.append(("morningstar", s.morningstar_url))
+            if s.yahoo_finance_url:
+                urls.append(("yahoo", s.yahoo_finance_url))
             if not urls:
                 continue
 
@@ -1137,7 +1397,7 @@ def ingest_monthly_holdings(db: Session, *, month: date | None = None, rate_limi
         today = datetime.now().date()
         m = month or date(today.year, today.month, 1)
 
-        monitored = db.query(MFScheme).filter_by(monitored=True).all()
+        monitored = db.query(MFScheme).filter(MFScheme.monitored.is_(True), mf_equity_direct_growth_scope()).all()
         family_ids = sorted({s.family_id for s in monitored if s.family_id is not None})
 
         snaps = 0
@@ -1383,7 +1643,7 @@ def bootstrap_holdings_history(db: Session, *, months: int = 12, rate_limit_s: f
 
         ensure_curated_watchlist(db)
 
-        months = max(1, min(int(months), 36))
+        months = max(1, min(int(months), int(settings.MF_HOLDINGS_BOOTSTRAP_MAX_MONTHS)))
         today = datetime.now().date()
         m0 = date(today.year, today.month, 1)
         month_list: list[date] = []
@@ -1393,7 +1653,7 @@ def bootstrap_holdings_history(db: Session, *, months: int = 12, rate_limit_s: f
             prev_last = cur_m - timedelta(days=1)
             cur_m = date(prev_last.year, prev_last.month, 1)
 
-        monitored = db.query(MFScheme).filter_by(monitored=True).all()
+        monitored = db.query(MFScheme).filter(MFScheme.monitored.is_(True), mf_equity_direct_growth_scope()).all()
         family_ids = sorted({s.family_id for s in monitored if s.family_id is not None})
 
         snapshots = 0

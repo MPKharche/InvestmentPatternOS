@@ -55,11 +55,30 @@ class Settings(BaseSettings):
     MF_LINK_CHECK_ENABLED: bool = False
     MF_LINK_CHECK_DAILY_CAP: int = 200
 
+    # Historical load tuning (see backend/scripts/mf_orchestrate_history.py)
+    # Holdings: mfdata month=YYYY-MM per family; older months may be empty depending on provider.
+    MF_HOLDINGS_BOOTSTRAP_MAX_MONTHS: int = 240  # ~20y window (cap passed into bootstrap_holdings_history)
+    # Gap-fill uses mfdata /nav/history?period=max (provider-dependent depth, often ~15–18y).
+    # Keep batches modest to reduce block risk (only equity Direct Growth schemes are ingested).
+    MF_GAPFILL_MAX_SCHEMES: int = 4000
+    # Mark schemes that already have NAV rows as monitored (0 = no limit; default caps each call).
+    MF_MARK_MONITORED_NAV_LIMIT: int = 2500
+
+    # Pacing between outbound scheme calls (seconds). Helps avoid burst patterns that trigger blocks.
+    MF_GAPFILL_INTER_SCHEME_SLEEP_S: float = 0.35
+    MF_BACKFILL_INTER_SCHEME_SLEEP_S: float = 0.25
+    MF_ENRICH_INTER_SCHEME_SLEEP_S: float = 0.3
+    MF_BACKFILL_MAX_WINDOWS_PER_SCHEME_PER_RUN: int = 3
+
     # Conservative rate limits (requests/min) to avoid IP blocks
-    MF_MAX_RPM_MFDATA_STANDARD: int = 60
-    MF_MAX_RPM_MFDATA_NAV: int = 120
-    MF_MAX_RPM_MFDATA_ANALYTICS: int = 15
-    MF_MAX_RPM_MFAPI: int = 20
+    MF_MAX_RPM_MFDATA_STANDARD: int = 36
+    MF_MAX_RPM_MFDATA_NAV: int = 48
+    MF_MAX_RPM_MFDATA_ANALYTICS: int = 12
+    MF_MAX_RPM_MFAPI: int = 12
+
+    # One-time historical NAV seed (same files as Kaggle dataset tharunreddy2911/mutual-fund-data; public mirror).
+    MF_HISTORICAL_PARQUET_URL: str = "https://github.com/InertExpert2911/Mutual_Fund_Data/raw/main/mutual_fund_nav_history.parquet"
+    MF_HISTORICAL_SCHEMES_CSV_URL: str = "https://github.com/InertExpert2911/Mutual_Fund_Data/raw/main/mutual_fund_data.csv"
 
     # Request hygiene
     MF_HTTP_USER_AGENT: str = "PatternOS/0.1 (+https://localhost; contact=admin@localhost)"

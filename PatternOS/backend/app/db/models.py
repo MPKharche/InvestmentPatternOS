@@ -482,6 +482,8 @@ class MFScheme(Base):
     benchmark = Column(Text)
     launch_date = Column(Date)
     morningstar_sec_id = Column(Text)
+    value_research_fund_id = Column(Integer)
+    yahoo_finance_symbol = Column(String(32))
 
     latest_nav = Column(Float)
     latest_nav_date = Column(Date)
@@ -493,8 +495,10 @@ class MFScheme(Base):
     # External links (best-effort deep links with safe fallbacks)
     valueresearch_url = Column(Text)
     morningstar_url = Column(Text)
+    yahoo_finance_url = Column(Text)
     valueresearch_link_status = Column(String(20))
     morningstar_link_status = Column(String(20))
+    yahoo_link_status = Column(String(20))
     links_last_checked_at = Column(DateTime(timezone=True))
     links_last_check_status = Column(Integer)
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.scanner.pattern_cooldown import collapse_by_bar_index_gap
+
 
 _DEFAULT_PATTERNS: list[str] = [
     "CDLDOJI",
@@ -81,6 +83,7 @@ def detect_talib_candlestick_patterns(
                 continue
             out.append(
                 {
+                    "_bar_index": i,
                     "time": times[i],
                     "name": pname.replace("CDL", "").title().replace("_", " "),
                     "direction": "bullish" if v > 0 else "bearish",
@@ -90,5 +93,5 @@ def detect_talib_candlestick_patterns(
             )
 
     out.sort(key=lambda r: (r["time"], r["name"]))
-    return out
+    return collapse_by_bar_index_gap(out, identity_fields=("name", "direction"), cooldown_bars=14)
 

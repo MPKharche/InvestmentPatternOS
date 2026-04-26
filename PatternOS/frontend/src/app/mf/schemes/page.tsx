@@ -166,6 +166,14 @@ export default function MFSchemesPage() {
                         >
                           Morningstar
                         </a>
+                        <a
+                          className="text-sky-400 hover:underline"
+                          href={r.yahoo_finance_url ?? siteSearchHref("finance.yahoo.com", r)}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Yahoo
+                        </a>
                       </div>
                     </td>
                     <td className="py-2 pr-3">

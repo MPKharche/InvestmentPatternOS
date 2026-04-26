@@ -15,3 +15,5 @@ numpy<2
 # TA-Lib wheels exist for cp311 on Windows; 0.6.x is the current maintained line.
 TA-Lib==0.6.8
 vectorbt==0.26.1
+# vectorbt themes expect Plotly v5 APIs; Plotly 6+ breaks theme helpers.
+plotly>=5.0,<6

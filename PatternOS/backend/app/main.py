@@ -1,6 +1,12 @@
 """PatternOS — FastAPI application entry point."""
 
 from contextlib import asynccontextmanager
+
+# Optional vectorbt + python-telegram-bot v21+: apply before any route imports `vectorbt`.
+from app.compat.vectorbt_shim import apply_vectorbt_ptb_compat
+
+apply_vectorbt_ptb_compat()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
