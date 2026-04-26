@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     BACKEND_PORT: int = 8000
     FRONTEND_PORT: int = 3000
+    # APScheduler (daily scan, MF ingest, Telegram outbox, cache cleanup). Set false on tiny VPS if you only need the API.
+    SCHEDULER_ENABLED: bool = True
     SIGNAL_CONFIDENCE_THRESHOLD: float = 70.0
 
     # Indicators engine (auto prefers TA-Lib if installed)

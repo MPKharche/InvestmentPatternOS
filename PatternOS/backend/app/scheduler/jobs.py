@@ -31,9 +31,9 @@ def start_scheduler():
         finally:
             db.close()
 
-    @scheduler.scheduled_job(CronTrigger(hour="*/6", timezone="Asia/Kolkata"))
+    @scheduler.scheduled_job(CronTrigger(hour="*/12", timezone="Asia/Kolkata"))
     async def cleanup_expired_cache():
-        """Runs every 6 hours — clean up expired screening cache entries."""
+        """Runs every 12 hours — clean up expired screening cache entries."""
         logger.debug("Running cache cleanup...")
         from app.db.session import SessionLocal
         from app.cache.signal_cache import purge_expired_cache
@@ -47,9 +47,11 @@ def start_scheduler():
         finally:
             db.close()
 
-    @scheduler.scheduled_job(CronTrigger(minute="*/2", timezone="Asia/Kolkata"))
+    @scheduler.scheduled_job(CronTrigger(minute="*/15", timezone="Asia/Kolkata"))
     async def sync_telegram_feedback_job():
-        """Runs every 2 minutes — import Telegram button feedback into PatternOS."""
+        """Runs every 15 minutes — import Telegram button feedback (only if a bot token is set)."""
+        if not (settings.TELEGRAM_BOT_TOKEN or "").strip():
+            return
         from app.db.session import SessionLocal
         from app.alerts.feedback_sync import sync_feedback_from_telegram
         db = SessionLocal()
@@ -60,9 +62,9 @@ def start_scheduler():
         finally:
             db.close()
 
-    @scheduler.scheduled_job(CronTrigger(minute="*/1", timezone="Asia/Kolkata"))
+    @scheduler.scheduled_job(CronTrigger(minute="*/3", timezone="Asia/Kolkata"))
     async def deliver_telegram_outbox_job():
-        """Runs every minute — deliver queued Telegram alerts with retries."""
+        """Runs every 3 minutes — deliver queued Telegram alerts with retries."""
         if not settings.TELEGRAM_ALERTS_ENABLED:
             return
         from app.db.session import SessionLocal
@@ -143,4 +145,6 @@ def start_scheduler():
 
 
 def stop_scheduler():
+    if not scheduler.running:
+        return
     scheduler.shutdown(wait=False)

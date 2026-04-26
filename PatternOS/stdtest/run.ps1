@@ -120,6 +120,7 @@ cur.close(); conn.close()
   }
 
   $env:APP_ENV = "test"
+  $env:SCHEDULER_ENABLED = "false"
   $env:LLM_DISABLED = "true"
   $env:TELEGRAM_ALERTS_ENABLED = "false"
   $env:TELEGRAM_MODE = "disabled"

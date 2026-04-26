@@ -80,6 +80,7 @@ for p in 8000 8001 3000 3001; do free_port "$p"; done
 sleep 1
 
 export APP_ENV=test
+export SCHEDULER_ENABLED=false
 export LLM_DISABLED=true
 export TELEGRAM_ALERTS_ENABLED=false
 export TELEGRAM_MODE=disabled

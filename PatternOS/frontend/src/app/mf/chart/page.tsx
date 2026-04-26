@@ -159,7 +159,8 @@ export default function MFChartToolPage() {
   const loadSchemeData = useCallback(async (schemeCode: number) => {
     setLoading(true);
     try {
-      const navLimit = 2500;
+      // Cap history fetch to limit browser chart work (lightweight-charts + markers).
+      const navLimit = 2000;
       const indLimit = barTf === "1M" ? 8200 : barTf === "1w" ? 3800 : 2600;
       const emptyOhlc = { scheme_code: schemeCode, tf: barTf, style: chartStyle, series: [] as MFOhlcBar[] };
       const [s, n, ohlcRes, inds, pats, m, sigs] = await Promise.all([

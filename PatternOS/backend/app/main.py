@@ -65,9 +65,11 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
 
-    start_scheduler()
+    if settings.SCHEDULER_ENABLED:
+        start_scheduler()
     yield
-    stop_scheduler()
+    if settings.SCHEDULER_ENABLED:
+        stop_scheduler()
 
 
 app = FastAPI(

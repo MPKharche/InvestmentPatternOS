@@ -10,6 +10,11 @@ import { cn } from "@/lib/utils";
 
 type Status = "checking" | "online" | "offline";
 
+/** Health/capabilities polling: keep VPS + laptops calm (was 30s). */
+const STATUS_PILL_POLL_MS = 120_000;
+/** Offline banner probe (was 20s). */
+const OFFLINE_BANNER_POLL_MS = 120_000;
+
 export function SystemStatusPill() {
   const [status, setStatus] = useState<Status>("checking");
   const [caps, setCaps] = useState<Capabilities | null>(null);
@@ -19,6 +24,7 @@ export function SystemStatusPill() {
   useEffect(() => {
     let alive = true;
     const run = async () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       try {
         const [h, c] = await Promise.all([fetchHealth(), fetchCapabilities()]);
         if (!alive) return;
@@ -34,10 +40,15 @@ export function SystemStatusPill() {
       }
     };
     run();
-    const id = window.setInterval(run, 30_000);
+    const id = window.setInterval(run, STATUS_PILL_POLL_MS);
+    const onVis = () => {
+      if (document.visibilityState === "visible") void run();
+    };
+    document.addEventListener("visibilitychange", onVis);
     return () => {
       alive = false;
       window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
     };
   }, []);
 
@@ -136,6 +147,7 @@ export function SystemOfflineBanner() {
   useEffect(() => {
     let alive = true;
     const run = async () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       try {
         await fetchCapabilities();
         if (!alive) return;
@@ -146,10 +158,15 @@ export function SystemOfflineBanner() {
       }
     };
     run();
-    const id = window.setInterval(run, 20_000);
+    const id = window.setInterval(run, OFFLINE_BANNER_POLL_MS);
+    const onVis = () => {
+      if (document.visibilityState === "visible") void run();
+    };
+    document.addEventListener("visibilitychange", onVis);
     return () => {
       alive = false;
       window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
     };
   }, []);
 
