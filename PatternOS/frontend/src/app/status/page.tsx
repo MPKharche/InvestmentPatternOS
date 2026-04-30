@@ -111,6 +111,15 @@ export default function StatusPage() {
         : "Checking…",
     },
     {
+      title: "n8n webhook",
+      ok: caps ? true : null,
+      detail: caps
+        ? caps.n8n?.webhook_configured
+          ? "Event webhook URL is set (signals can fan out to n8n)."
+          : "Optional: set N8N_WEBHOOK_URL for automation (e.g. http://localhost:5678/webhook/…)."
+        : "Checking…",
+    },
+    {
       title: "Optional quant engines",
       ok: caps ? true : null,
       detail: caps

@@ -81,14 +81,19 @@ async def chat(
     """
     if settings.LLM_DISABLED or not settings.OPENROUTER_API_KEY:
         return "LLM disabled (stub)."
-    return await _call_with_fallback(
-        primary=settings.LLM_CHAT_MODEL,
-        fallback=settings.LLM_FALLBACK_MODEL,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        label="chat",
-    )
+    try:
+        return await _call_with_fallback(
+            primary=settings.LLM_CHAT_MODEL,
+            fallback=settings.LLM_FALLBACK_MODEL,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            label="chat",
+        )
+    except Exception as e:
+        # Keep Studio usable in dev/stdtest even if model routing is misconfigured.
+        logger.error(f"[chat] LLM call failed, returning stub ({type(e).__name__}: {e})")
+        return "LLM unavailable (stub)."
 
 
 async def reason(
@@ -102,14 +107,18 @@ async def reason(
     """
     if settings.LLM_DISABLED or not settings.OPENROUTER_API_KEY:
         return "{}"
-    return await _call_with_fallback(
-        primary=settings.LLM_REASONING_MODEL,
-        fallback=settings.LLM_FALLBACK_MODEL,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        label="reason",
-    )
+    try:
+        return await _call_with_fallback(
+            primary=settings.LLM_REASONING_MODEL,
+            fallback=settings.LLM_FALLBACK_MODEL,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            label="reason",
+        )
+    except Exception as e:
+        logger.error(f"[reason] LLM call failed, returning stub ({type(e).__name__}: {e})")
+        return "{}"
 
 
 async def screen(
@@ -124,11 +133,15 @@ async def screen(
     if settings.LLM_DISABLED or not settings.OPENROUTER_API_KEY:
         # Expected by llm_screen: it parses freeform text, so keep it consistent.
         return "Adjusted score: same as base. Analysis: LLM disabled (stub)."
-    return await _call_with_fallback(
-        primary=settings.LLM_SCREENING_MODEL,
-        fallback=settings.LLM_FALLBACK_MODEL,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        label="screen",
-    )
+    try:
+        return await _call_with_fallback(
+            primary=settings.LLM_SCREENING_MODEL,
+            fallback=settings.LLM_FALLBACK_MODEL,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            label="screen",
+        )
+    except Exception as e:
+        logger.error(f"[screen] LLM call failed, returning stub ({type(e).__name__}: {e})")
+        return "Adjusted score: same as base. Analysis: LLM unavailable (stub)."

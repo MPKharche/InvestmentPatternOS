@@ -38,6 +38,19 @@ function Stop-UvicornOnPort([int]$port) {
   }
 }
 
+function Test-PortFree([int]$port) {
+  $c = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+  return (-not $c)
+}
+
+function Resolve-FreePort([int]$preferred, [int]$maxTries = 20) {
+  for ($i = 0; $i -lt $maxTries; $i++) {
+    $p = $preferred + $i
+    if (Test-PortFree $p) { return $p }
+  }
+  throw "No free port found starting at $preferred"
+}
+
 function Wait-HttpOk([string]$url, [int]$timeoutSec = 60) {
   $sw = [Diagnostics.Stopwatch]::StartNew()
   while ($sw.Elapsed.TotalSeconds -lt $timeoutSec) {
@@ -56,6 +69,17 @@ foreach ($p in @($FrontendPort, 3001, $BackendPort, 8001)) {
   Stop-Port $p
 }
 Start-Sleep -Seconds 1
+
+# Some developer tools (e.g., IDEs) may keep localhost ports occupied. If the requested
+# ports are still taken, auto-pick the next available ones to avoid a broken launch.
+if (-not (Test-PortFree $BackendPort)) {
+  $BackendPort = Resolve-FreePort $BackendPort
+  Write-Host "[dev-up] NOTE: Using backend port $BackendPort (preferred was taken)"
+}
+if (-not (Test-PortFree $FrontendPort)) {
+  $FrontendPort = Resolve-FreePort $FrontendPort
+  Write-Host "[dev-up] NOTE: Using frontend port $FrontendPort (preferred was taken)"
+}
 
 Write-Host "[dev-up] Writing frontend handshake (.env.local)..."
 $envLocal = Join-Path $frontendDir ".env.local"

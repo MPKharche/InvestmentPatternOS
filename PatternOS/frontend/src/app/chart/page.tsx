@@ -11,11 +11,10 @@ import {
   type ISeriesMarkersPluginApi,
   type SeriesMarker,
   type Time,
-  ColorType,
-  CrosshairMode,
   PriceScaleMode,
   LineStyle,
 } from "lightweight-charts";
+import { patternOsChartToolBase as CHART_OPTS } from "@/lib/chart-theme";
 import { universeApi, signalsApi, type UniverseItem, type Signal } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -113,16 +112,6 @@ function syncRange(source: IChartApi, ...targets: (IChartApi | null)[]) {
   }
   _syncing = false;
 }
-
-// ── Chart colour constants ────────────────────────────────────────────────────
-const BG = "#0a0a0c";
-const GRID = "#111115";
-const CHART_OPTS = {
-  layout: { background: { type: ColorType.Solid, color: BG }, textColor: "#9ca3af", fontSize: 11 },
-  grid: { vertLines: { color: GRID }, horzLines: { color: GRID } },
-  crosshair: { mode: CrosshairMode.Normal, vertLine: { color: "#374151", labelBackgroundColor: "#1f2937" }, horzLine: { color: "#374151", labelBackgroundColor: "#1f2937" } },
-  timeScale: { borderColor: "#1f2937", timeVisible: true, secondsVisible: false },
-};
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function ChartPage() {

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createChart,
+  CandlestickSeries,
   LineSeries,
   createSeriesMarkers,
   type IChartApi,
@@ -10,10 +11,14 @@ import {
   type ISeriesMarkersPluginApi,
   type SeriesMarker,
   type Time,
-  ColorType,
   LineStyle,
 } from "lightweight-charts";
-import { mfApi, type MFIndicatorRecord, type MFNavPoint, type MFPatternsResponse, type MFScheme, type MFSignal } from "@/lib/api";
+import {
+  patternOsChartMfCardOptions,
+  patternOsChartMfSubPaneOptions,
+  patternOsCandlestickSeriesDefaults,
+} from "@/lib/chart-theme";
+import { mfApi, type MFIndicatorRecord, type MFOhlcBar, type MFNavPoint, type MFPatternsResponse, type MFScheme, type MFSignal } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +42,7 @@ import {
 const BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api/v1";
 
 type IndKey = "ema20" | "ema50" | "rsi" | "macd";
+type ChartStyle = "candles" | "heikin" | "line";
 
 const TIMEFRAMES = [
   { value: "1M", label: "1M" },
@@ -59,18 +65,25 @@ export default function MFChartToolPage() {
 
   // Data states
   const [nav, setNav] = useState<MFNavPoint[]>([]);
+  const [bars, setBars] = useState<MFOhlcBar[]>([]);
   const [indicators, setIndicators] = useState<MFIndicatorRecord[]>([]);
   const [patterns, setPatterns] = useState<MFPatternsResponse | null>(null);
   const [metrics, setMetrics] = useState<any>(null);
   const [holdings, setHoldings] = useState<any>(null);
   const [signals, setSignals] = useState<MFSignal[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshingHoldings, setRefreshingHoldings] = useState(false);
+  const [latestAmfiDate, setLatestAmfiDate] = useState<string | null>(null);
+  const [variantSuggestion, setVariantSuggestion] = useState<MFScheme | null>(null);
+  const [switchingVariant, setSwitchingVariant] = useState(false);
 
   // Chart refs
   const chartRef = useRef<HTMLDivElement>(null);
   const chartApi = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<"Line"> | null>(null);
-  const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const lineSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const candleMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const lineMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const ema20Ref = useRef<ISeriesApi<"Line"> | null>(null);
   const ema50Ref = useRef<ISeriesApi<"Line"> | null>(null);
 
@@ -84,13 +97,22 @@ export default function MFChartToolPage() {
   const macdSignalRef = useRef<ISeriesApi<"Line"> | null>(null);
 
   // UI states
+  const [barTf, setBarTf] = useState<"1d" | "1w" | "1M">("1d");
   const [timeframe, setTimeframe] = useState<"1M" | "3M" | "6M" | "1Y" | "3Y" | "5Y" | "10Y" | "MAX">("MAX");
   const [activeInds, setActiveInds] = useState<Set<IndKey>>(new Set(["ema20", "ema50", "rsi"]));
+  const [chartStyle, setChartStyle] = useState<ChartStyle>("candles");
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [activeTab, setActiveTab] = useState<"overview" | "holdings" | "signals" | "links">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "holdings" | "signals" | "patterns" | "links">("overview");
 
   const showRsi = activeInds.has("rsi");
   const showMacd = activeInds.has("macd");
+
+  // Default style: candles on D, Heikin Ashi on W/M (but user can override).
+  useEffect(() => {
+    if (barTf === "1d" && chartStyle === "heikin") setChartStyle("candles");
+    if (barTf !== "1d" && chartStyle === "candles") setChartStyle("heikin");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [barTf]);
 
   // Load schemes list
   useEffect(() => {
@@ -100,6 +122,19 @@ export default function MFChartToolPage() {
         setSelectedScheme(s[0]);
       }
     });
+  }, []);
+
+  // Fetch latest AMFI date from pipeline status (used to detect stale scheme variants).
+  useEffect(() => {
+    void mfApi
+      .status()
+      .then((st) => {
+        const d = (st as any)?.latest_nav_run?.stats_json?.latest_date;
+        if (typeof d === "string" && d.length >= 10) setLatestAmfiDate(d.slice(0, 10));
+      })
+      .catch(() => {
+        // non-fatal
+      });
   }, []);
 
   // Close dropdown on outside click
@@ -133,16 +168,20 @@ export default function MFChartToolPage() {
   const loadSchemeData = useCallback(async (schemeCode: number) => {
     setLoading(true);
     try {
-      const [s, n, inds, pats, m, sigs] = await Promise.all([
+      const lim = barTf === "1d" ? 2500 : 5000;
+      const ha = chartStyle === "heikin";
+      const [s, n, ohlc, inds, pats, m, sigs] = await Promise.all([
         mfApi.scheme(schemeCode),
-        mfApi.nav(schemeCode, 2500),
-        mfApi.indicators(schemeCode, 2500),
-        mfApi.patterns(schemeCode, 220),
+        mfApi.nav(schemeCode, lim, barTf),
+        mfApi.ohlc(schemeCode, lim, barTf, ha),
+        mfApi.indicators(schemeCode, lim, barTf),
+        mfApi.patterns(schemeCode, 220, barTf),
         mfApi.metrics(schemeCode),
         mfApi.signals("all", 400),
       ]);
       setSelectedScheme(s);
       setNav(n);
+      setBars(ohlc);
       setIndicators(inds);
       setPatterns(pats);
       setMetrics(m);
@@ -162,7 +201,34 @@ export default function MFChartToolPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [barTf, chartStyle]);
+
+  const refreshHoldingsNow = useCallback(async () => {
+    const fam = selectedScheme?.family_id;
+    if (!fam) {
+      toast.message("Holdings need one-time scheme enrichment first (Enable analysis).");
+      return;
+    }
+    setRefreshingHoldings(true);
+    try {
+      const res = await mfApi.refreshHoldings(fam);
+      if (res.skipped) {
+        toast.message(res.reason ?? "Holdings refresh is disabled");
+        return;
+      }
+      if (!res.fetched) {
+        toast.message(res.error ? `Holdings not available: ${res.error}` : "Holdings not available for this fund yet");
+        return;
+      }
+      const h = await mfApi.holdings(fam);
+      setHoldings(h);
+      toast.success("Holdings updated");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to refresh holdings");
+    } finally {
+      setRefreshingHoldings(false);
+    }
+  }, [selectedScheme?.family_id]);
 
   useEffect(() => {
     if (selectedScheme?.scheme_code) {
@@ -170,11 +236,71 @@ export default function MFChartToolPage() {
     }
   }, [selectedScheme?.scheme_code, loadSchemeData]);
 
+  // If the selected scheme variant is stale vs the latest AMFI date, suggest a better-matched scheme_code.
+  useEffect(() => {
+    const s = selectedScheme;
+    if (!s?.scheme_name || !s?.latest_nav_date || !latestAmfiDate) {
+      setVariantSuggestion(null);
+      return;
+    }
+    const cur = new Date(s.latest_nav_date);
+    const latest = new Date(latestAmfiDate);
+    const days = Math.floor((latest.getTime() - cur.getTime()) / (24 * 3600 * 1000));
+    if (!Number.isFinite(days) || days <= 30) {
+      setVariantSuggestion(null);
+      return;
+    }
+
+    let cancelled = false;
+    void mfApi
+      .schemes(false, s.scheme_name)
+      .then((list) => {
+        if (cancelled) return;
+        const candidates = (list || []).filter((x) => x.scheme_name === s.scheme_name && x.latest_nav_date);
+        if (!candidates.length) {
+          setVariantSuggestion(null);
+          return;
+        }
+        candidates.sort((a, b) => String(b.latest_nav_date).localeCompare(String(a.latest_nav_date)));
+        const best = candidates[0];
+        if (best.scheme_code !== s.scheme_code && String(best.latest_nav_date) > String(s.latest_nav_date)) {
+          setVariantSuggestion(best);
+        } else {
+          setVariantSuggestion(null);
+        }
+      })
+      .catch(() => setVariantSuggestion(null));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedScheme?.scheme_code, selectedScheme?.scheme_name, selectedScheme?.latest_nav_date, latestAmfiDate]);
+
+  const switchToSuggestedVariant = useCallback(async () => {
+    if (!selectedScheme || !variantSuggestion) return;
+    setSwitchingVariant(true);
+    try {
+      // If the current one is monitored, move monitoring to the newer scheme_code.
+      if (selectedScheme.monitored) {
+        await Promise.all([
+          mfApi.updateScheme(selectedScheme.scheme_code, { monitored: false }),
+          mfApi.updateScheme(variantSuggestion.scheme_code, { monitored: true }),
+        ]);
+      }
+      setSelectedScheme(variantSuggestion);
+      toast.success("Switched to the latest scheme variant");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to switch scheme variant");
+    } finally {
+      setSwitchingVariant(false);
+    }
+  }, [selectedScheme, variantSuggestion]);
+
   // Filter data by timeframe
-  const filteredNav = useMemo(() => {
-    if (timeframe === "MAX") return nav;
-    if (!nav.length) return nav;
-    const end = new Date(nav[nav.length - 1].nav_date);
+  const filteredBars = useMemo(() => {
+    if (timeframe === "MAX") return bars;
+    if (!bars.length) return bars;
+    const end = new Date(bars[bars.length - 1].time);
     const start = new Date(end);
     if (timeframe === "1M") start.setMonth(start.getMonth() - 1);
     if (timeframe === "3M") start.setMonth(start.getMonth() - 3);
@@ -183,42 +309,103 @@ export default function MFChartToolPage() {
     if (timeframe === "3Y") start.setFullYear(start.getFullYear() - 3);
     if (timeframe === "5Y") start.setFullYear(start.getFullYear() - 5);
     if (timeframe === "10Y") start.setFullYear(start.getFullYear() - 10);
-    return nav.filter((p) => new Date(p.nav_date) >= start);
-  }, [nav, timeframe]);
+    return bars.filter((p) => new Date(p.time) >= start);
+  }, [bars, timeframe]);
 
   const filteredIndicators = useMemo(() => {
-    if (!indicators.length || !filteredNav.length) return [];
-    const allowed = new Set(filteredNav.map((p) => p.nav_date));
+    if (!indicators.length || !filteredBars.length) return [];
+    const allowed = new Set(filteredBars.map((p) => p.time));
     return indicators.filter((r) => allowed.has(r.time));
-  }, [indicators, filteredNav]);
+  }, [indicators, filteredBars]);
 
   const navByTime = useMemo(() => {
-    return new Map(filteredNav.map((p) => [p.nav_date, p.nav]));
-  }, [filteredNav]);
+    return new Map(filteredBars.map((p) => [p.time, p.close]));
+  }, [filteredBars]);
 
   const indByTime = useMemo(() => {
     return new Map(filteredIndicators.map((r) => [r.time, r]));
   }, [filteredIndicators]);
 
+  const patternItems = useMemo(() => {
+    const talib = (patterns?.talib_candlestick_patterns || []) as any[];
+    const native = (patterns?.candlestick_patterns || []) as any[];
+    const chartP = (patterns?.chart_patterns || []) as any[];
+    const out: { time: string; label: string; direction?: string; kind: string }[] = [];
+
+    for (const p of talib) {
+      const t = String(p?.time ?? "").slice(0, 10);
+      const label = String(p?.name ?? "").trim();
+      if (!t || !label) continue;
+      out.push({ time: t, label, direction: p?.direction, kind: "candlestick" });
+    }
+    for (const p of native) {
+      const t = String(p?.date ?? "").slice(0, 10);
+      const label = String(p?.pattern ?? "").trim();
+      if (!t || !label) continue;
+      out.push({ time: t, label, direction: p?.direction, kind: "candlestick" });
+    }
+    for (const p of chartP) {
+      const t = String(p?.end_date ?? p?.date ?? p?.time ?? "").slice(0, 10);
+      const label = String(p?.type ?? p?.pattern ?? p?.name ?? "Chart pattern").trim();
+      if (!t || !label) continue;
+      out.push({ time: t, label, direction: p?.direction, kind: "chart" });
+    }
+
+    const seen = new Set<string>();
+    const unique: typeof out = [];
+    for (const it of out.sort((a, b) => b.time.localeCompare(a.time))) {
+      const k = `${it.kind}:${it.time}:${it.direction ?? ""}:${it.label}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      unique.push(it);
+    }
+    return unique.slice(0, 250);
+  }, [patterns]);
+
+  const focusOnTime = useCallback((t: string) => {
+    if (!t) return;
+    setTimeframe("MAX");
+    // Defer until the chart renders the MAX dataset.
+    setTimeout(() => {
+      const idx = bars.findIndex((b) => b.time === t);
+      if (idx < 0) return;
+      const from = Math.max(0, idx - 30);
+      const to = Math.min(bars.length - 1, idx + 30);
+      try {
+        chartApi.current?.timeScale().setVisibleLogicalRange({ from, to } as any);
+      } catch {
+        /**/
+      }
+    }, 0);
+  }, [bars]);
+
   // Init main chart
   useEffect(() => {
     if (!chartRef.current) return;
     const c = createChart(chartRef.current, {
-      layout: { textColor: "#e5e7eb", background: { type: ColorType.Solid, color: "transparent" } },
-      grid: { vertLines: { color: "rgba(148,163,184,0.08)" }, horzLines: { color: "rgba(148,163,184,0.08)" } },
-      rightPriceScale: { borderColor: "rgba(148,163,184,0.15)", minimumWidth: 72 },
-      timeScale: { borderColor: "rgba(148,163,184,0.15)", visible: false },
-      height: 320,
+      width: chartRef.current.clientWidth,
+      ...patternOsChartMfCardOptions({ height: 320 }),
     });
-    const s = c.addSeries(LineSeries, { color: "#38bdf8", lineWidth: 2, priceLineVisible: false, lastValueVisible: true });
+    const candles = c.addSeries(CandlestickSeries, {
+      ...patternOsCandlestickSeriesDefaults,
+    });
+    const line = c.addSeries(LineSeries, {
+      color: "#38bdf8",
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: true,
+    });
     const e20 = c.addSeries(LineSeries, { color: "#22c55e", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, lineStyle: LineStyle.Dotted });
     const e50 = c.addSeries(LineSeries, { color: "#3b82f6", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, lineStyle: LineStyle.Dotted });
-    const markers = createSeriesMarkers(s);
+    const candleMarkers = createSeriesMarkers(candles);
+    const lineMarkers = createSeriesMarkers(line);
     chartApi.current = c;
-    seriesRef.current = s;
+    candleSeriesRef.current = candles;
+    lineSeriesRef.current = line;
     ema20Ref.current = e20;
     ema50Ref.current = e50;
-    markersRef.current = markers;
+    candleMarkersRef.current = candleMarkers;
+    lineMarkersRef.current = lineMarkers;
     const ro = new ResizeObserver(() => {
       if (!chartRef.current) return;
       c.applyOptions({ width: chartRef.current.clientWidth });
@@ -228,25 +415,34 @@ export default function MFChartToolPage() {
       ro.disconnect();
       c.remove();
       chartApi.current = null;
-      seriesRef.current = null;
+      candleSeriesRef.current = null;
+      lineSeriesRef.current = null;
       ema20Ref.current = null;
       ema50Ref.current = null;
-      markersRef.current = null;
+      candleMarkersRef.current = null;
+      lineMarkersRef.current = null;
     };
   }, []);
 
   // Set chart data
   useEffect(() => {
-    if (!seriesRef.current) return;
-    if (!filteredNav.length) return;
-    const data = filteredNav.map((p) => ({ time: p.nav_date as Time, value: p.nav }));
-    seriesRef.current.setData(data);
+    if (!filteredBars.length) return;
+    const candleData = filteredBars.map((b) => ({ time: b.time as Time, open: b.open, high: b.high, low: b.low, close: b.close }));
+    const lineData = filteredBars.map((b) => ({ time: b.time as Time, value: b.close }));
+
+    if (chartStyle === "line") {
+      candleSeriesRef.current?.setData([] as any);
+      lineSeriesRef.current?.setData(lineData as any);
+    } else {
+      lineSeriesRef.current?.setData([] as any);
+      candleSeriesRef.current?.setData(candleData as any);
+    }
     chartApi.current?.timeScale().fitContent();
-  }, [filteredNav]);
+  }, [filteredBars, chartStyle]);
 
   useEffect(() => {
-    if (!filteredNav.length) return;
-    const times = filteredNav.map((p) => p.nav_date as Time);
+    if (!filteredBars.length) return;
+    const times = filteredBars.map((p) => p.time as Time);
     const byTime = new Map(filteredIndicators.map((r) => [r.time, r]));
 
     if (ema20Ref.current) {
@@ -276,15 +472,16 @@ export default function MFChartToolPage() {
         ema50Ref.current.setData([] as any);
       }
     }
-  }, [filteredNav, filteredIndicators, activeInds]);
+  }, [filteredBars, filteredIndicators, activeInds]);
 
   // Signal markers with overlap detection
   useEffect(() => {
-    if (!markersRef.current) return;
+    const markersApi = chartStyle === "line" ? lineMarkersRef.current : candleMarkersRef.current;
+    if (!markersApi) return;
     const markers: SeriesMarker<Time>[] = [];
 
-    const min = filteredNav.length ? filteredNav[0].nav_date : null;
-    const max = filteredNav.length ? filteredNav[filteredNav.length - 1].nav_date : null;
+    const min = filteredBars.length ? filteredBars[0].time : null;
+    const max = filteredBars.length ? filteredBars[filteredBars.length - 1].time : null;
 
     // Group signals by date to detect overlaps
     const signalsByDate = new Map<string, MFSignal[]>();
@@ -297,20 +494,19 @@ export default function MFChartToolPage() {
       signalsByDate.get(s.nav_date)!.push(s);
     }
 
-    // Add markers with offset for overlapping signals
+    // Collapse to 1 marker per day (prevents clutter/overlap).
     signalsByDate.forEach((sigs, date) => {
-      sigs.forEach((s, idx) => {
-        const col = s.confidence_score >= 80 ? "#22c55e" : s.confidence_score >= 70 ? "#f59e0b" : "#ef4444";
-        const isOverlap = sigs.length > 1;
-        markers.push({
-          time: date as Time,
-          position: idx % 2 === 0 ? "aboveBar" : "belowBar",
-          color: col,
-          shape: isOverlap ? "square" : "circle",
-          text: isOverlap ? `${s.signal_type.slice(0, 8)}(${sigs.length})` : s.signal_type.slice(0, 12),
-          size: isOverlap ? 2 : 1,
-        });
-      });
+      const best = [...sigs].sort((a, b) => (b.confidence_score ?? 0) - (a.confidence_score ?? 0))[0];
+      const col = best.confidence_score >= 80 ? "#22c55e" : best.confidence_score >= 70 ? "#f59e0b" : "#ef4444";
+      const m: SeriesMarker<Time> = {
+        time: date as Time,
+        position: "aboveBar",
+        color: col,
+        shape: sigs.length > 1 ? "square" : "circle",
+        size: sigs.length > 1 ? 2 : 1,
+      };
+      if (sigs.length > 1) m.text = String(sigs.length);
+      markers.push(m);
     });
 
     // Pattern markers
@@ -322,20 +518,38 @@ export default function MFChartToolPage() {
     ].filter((p) => p.time && p.label);
 
     const patInWindow = allPats.filter((p) => !min || !max || (String(p.time) >= min && String(p.time) <= max));
-    patInWindow.sort((a, b) => String(a.time).localeCompare(String(b.time)));
-    const recent = patInWindow.slice(Math.max(0, patInWindow.length - 8));
-    for (const p of recent) {
-      const bullish = p.direction === "bullish";
-      markers.push({
-        time: p.time as Time,
-        position: bullish ? "belowBar" : "aboveBar",
-        color: bullish ? "#22c55e" : "#ef4444",
-        shape: bullish ? "arrowUp" : "arrowDown",
-        text: String(p.label || "").slice(0, 12),
-      });
+    // Collapse patterns per day + direction; show counts, not overlapping labels.
+    const patsByDate = new Map<string, { bull: any[]; bear: any[]; other: any[] }>();
+    for (const p of patInWindow) {
+      const key = String(p.time);
+      const entry = patsByDate.get(key) ?? { bull: [], bear: [], other: [] };
+      if (p.direction === "bullish") entry.bull.push(p);
+      else if (p.direction === "bearish") entry.bear.push(p);
+      else entry.other.push(p);
+      patsByDate.set(key, entry);
     }
-    markersRef.current.setMarkers(markers);
-  }, [signals, patterns, filteredNav]);
+    const patDates = Array.from(patsByDate.keys()).sort((a, b) => a.localeCompare(b));
+    const recentDates = patDates.slice(Math.max(0, patDates.length - 12));
+    for (const d of recentDates) {
+      const entry = patsByDate.get(d)!;
+      if (entry.bear.length) {
+        const m: SeriesMarker<Time> = { time: d as Time, position: "aboveBar", color: "#ef4444", shape: "arrowDown", size: 1 };
+        if (entry.bear.length > 1) m.text = String(entry.bear.length);
+        markers.push(m);
+      }
+      if (entry.bull.length) {
+        const m: SeriesMarker<Time> = { time: d as Time, position: "belowBar", color: "#22c55e", shape: "arrowUp", size: 1 };
+        if (entry.bull.length > 1) m.text = String(entry.bull.length);
+        markers.push(m);
+      }
+      if (!entry.bull.length && !entry.bear.length && entry.other.length) {
+        const m: SeriesMarker<Time> = { time: d as Time, position: "aboveBar", color: "#9ca3af", shape: "circle", size: 1 };
+        if (entry.other.length > 1) m.text = String(entry.other.length);
+        markers.push(m);
+      }
+    }
+    markersApi.setMarkers(markers);
+  }, [signals, patterns, filteredBars, chartStyle]);
 
   // RSI chart
   useEffect(() => {
@@ -349,13 +563,8 @@ export default function MFChartToolPage() {
     if (rsiChartApi.current) return;
 
     const c = createChart(rsiRef.current, {
-      layout: { textColor: "#e5e7eb", background: { type: ColorType.Solid, color: "transparent" } },
-      grid: { vertLines: { color: "rgba(148,163,184,0.06)" }, horzLines: { color: "rgba(148,163,184,0.06)" } },
-      rightPriceScale: { borderColor: "rgba(148,163,184,0.15)", minimumWidth: 72 },
-      timeScale: { borderColor: "rgba(148,163,184,0.15)", visible: !showMacd },
-      handleScroll: false,
-      handleScale: false,
-      height: 140,
+      width: rsiRef.current.clientWidth,
+      ...patternOsChartMfSubPaneOptions({ height: 140, timeScaleVisible: !showMacd }),
     });
     const s = c.addSeries(LineSeries, { color: "#a78bfa", lineWidth: 2, priceLineVisible: false, lastValueVisible: true });
     rsiChartApi.current = c;
@@ -373,16 +582,16 @@ export default function MFChartToolPage() {
   useEffect(() => {
     if (!rsiSeriesRef.current) return;
     if (!showRsi) return;
-    if (!filteredNav.length) return;
+    if (!filteredBars.length) return;
     const byTime = new Map(filteredIndicators.map((r) => [r.time, r]));
-    const data = filteredNav
+    const data = filteredBars
       .map((p) => {
-        const r = byTime.get(p.nav_date);
-        return r?.rsi != null ? { time: p.nav_date as Time, value: r.rsi } : null;
+        const r = byTime.get(p.time);
+        return r?.rsi != null ? { time: p.time as Time, value: r.rsi } : null;
       })
       .filter(Boolean) as any;
     rsiSeriesRef.current.setData(data);
-  }, [filteredNav, filteredIndicators, showRsi]);
+  }, [filteredBars, filteredIndicators, showRsi]);
 
   // MACD chart
   useEffect(() => {
@@ -397,13 +606,8 @@ export default function MFChartToolPage() {
     if (macdChartApi.current) return;
 
     const c = createChart(macdRef.current, {
-      layout: { textColor: "#e5e7eb", background: { type: ColorType.Solid, color: "transparent" } },
-      grid: { vertLines: { color: "rgba(148,163,184,0.06)" }, horzLines: { color: "rgba(148,163,184,0.06)" } },
-      rightPriceScale: { borderColor: "rgba(148,163,184,0.15)", minimumWidth: 72 },
-      timeScale: { borderColor: "rgba(148,163,184,0.15)", visible: true },
-      handleScroll: false,
-      handleScale: false,
-      height: 160,
+      width: macdRef.current.clientWidth,
+      ...patternOsChartMfSubPaneOptions({ height: 160, timeScaleVisible: true }),
     });
     const m = c.addSeries(LineSeries, { color: "#38bdf8", lineWidth: 2, priceLineVisible: false, lastValueVisible: true });
     const sig = c.addSeries(LineSeries, { color: "#f59e0b", lineWidth: 2, priceLineVisible: false, lastValueVisible: true, lineStyle: LineStyle.Dotted });
@@ -446,29 +650,29 @@ export default function MFChartToolPage() {
   useEffect(() => {
     if (!macdSeriesRef.current || !macdSignalRef.current) return;
     if (!showMacd) return;
-    if (!filteredNav.length) return;
+    if (!filteredBars.length) return;
     const byTime = new Map(filteredIndicators.map((r) => [r.time, r]));
-    const macdData = filteredNav
+    const macdData = filteredBars
       .map((p) => {
-        const r = byTime.get(p.nav_date);
-        return r?.macd != null ? { time: p.nav_date as Time, value: r.macd } : null;
+        const r = byTime.get(p.time);
+        return r?.macd != null ? { time: p.time as Time, value: r.macd } : null;
       })
       .filter(Boolean) as any;
-    const sigData = filteredNav
+    const sigData = filteredBars
       .map((p) => {
-        const r = byTime.get(p.nav_date);
-        return r?.macd_signal != null ? { time: p.nav_date as Time, value: r.macd_signal } : null;
+        const r = byTime.get(p.time);
+        return r?.macd_signal != null ? { time: p.time as Time, value: r.macd_signal } : null;
       })
       .filter(Boolean) as any;
     macdSeriesRef.current.setData(macdData);
     macdSignalRef.current.setData(sigData);
-  }, [filteredNav, filteredIndicators, showMacd]);
+  }, [filteredBars, filteredIndicators, showMacd]);
 
   // Crosshair sync
   const syncingCrosshair = useRef(false);
   useEffect(() => {
     const main = chartApi.current;
-    const mainSeries = seriesRef.current;
+    const mainSeries = chartStyle === "line" ? lineSeriesRef.current : candleSeriesRef.current;
     if (!main || !mainSeries) return;
 
     const rsiChart = rsiChartApi.current;
@@ -568,7 +772,7 @@ export default function MFChartToolPage() {
       if (rsiChart) rsiChart.unsubscribeCrosshairMove(onRsiMove);
       if (macdChart) macdChart.unsubscribeCrosshairMove(onMacdMove);
     };
-  }, [indByTime, navByTime, showRsi, showMacd]);
+  }, [indByTime, navByTime, showRsi, showMacd, chartStyle]);
 
   // Holdings
   const topHoldings = useMemo(() => {
@@ -673,6 +877,61 @@ export default function MFChartToolPage() {
             )}
           </div>
 
+          {/* Bar timeframe (D/W/M) */}
+          <div className="flex gap-0.5">
+            {(
+              [
+                { v: "1d" as const, label: "D" },
+                { v: "1w" as const, label: "W" },
+                { v: "1M" as const, label: "M" },
+              ] as const
+            ).map((it) => (
+              <Button
+                key={it.v}
+                size="sm"
+                variant={barTf === it.v ? "default" : "ghost"}
+                className="h-7 px-2 text-xs"
+                onClick={() => setBarTf(it.v)}
+                title="Bar timeframe"
+              >
+                {it.label}
+              </Button>
+            ))}
+            {barTf !== "1d" ? (
+              <Badge variant="outline" className="ml-1 text-[10px]" title="Weekly/Monthly uses Heikin Ashi candles">
+                Heikin Ashi
+              </Badge>
+            ) : null}
+            <span className="ml-2 text-[10px] text-muted-foreground" title="Number of bars shown (after aggregation)">
+              {filteredBars.length ? `${filteredBars.length} bars` : ""}
+            </span>
+          </div>
+
+          <div className="w-px h-6 bg-border/60 mx-1" />
+
+          {/* Chart style */}
+          <div className="flex gap-0.5">
+            {[
+              { v: "line" as const, label: "Line" },
+              { v: "candles" as const, label: "Candles" },
+              { v: "heikin" as const, label: "Heikin" },
+            ].map((it) => (
+              <Button
+                key={it.v}
+                size="sm"
+                variant={chartStyle === it.v ? "default" : "ghost"}
+                className="h-7 px-2 text-xs"
+                onClick={() => setChartStyle(it.v)}
+                disabled={it.v === "heikin" && barTf === "1d"}
+                title={it.v === "heikin" && barTf === "1d" ? "Heikin Ashi applies to W/M" : "Chart style"}
+              >
+                {it.label}
+              </Button>
+            ))}
+          </div>
+
+          <div className="w-px h-6 bg-border/60 mx-1" />
+
           {/* Timeframes */}
           <div className="flex gap-0.5">
             {TIMEFRAMES.map((tf) => (
@@ -735,8 +994,25 @@ export default function MFChartToolPage() {
           </Button>
         </div>
 
-        {/* Chart area */}
-        <div className="flex-1 min-h-0 flex flex-col relative overflow-hidden">
+      {/* Chart area */}
+      <div className="flex-1 min-h-0 flex flex-col relative overflow-hidden">
+          {variantSuggestion ? (
+            <div className="absolute top-2 left-2 right-2 z-10">
+              <Card className="border-yellow-500/30 bg-card/80 backdrop-blur">
+                <CardContent className="p-2 flex items-center justify-between gap-2 text-xs">
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">This scheme variant looks outdated.</div>
+                    <div className="text-muted-foreground truncate">
+                      Latest NAV here: {selectedScheme?.latest_nav_date} Â· Better match available: AMFI {variantSuggestion.scheme_code} ({variantSuggestion.latest_nav_date})
+                    </div>
+                  </div>
+                  <Button size="sm" onClick={switchToSuggestedVariant} disabled={switchingVariant}>
+                    {switchingVariant ? "Switchingâ€¦" : "Switch"}
+                  </Button>
+                </CardContent>
+              </Card>
+            </div>
+          ) : null}
           <div ref={chartRef} className="w-full flex-1 min-h-0" />
 
           {showRsi && (
@@ -778,6 +1054,7 @@ export default function MFChartToolPage() {
               { key: "overview", label: "Overview", icon: Activity },
               { key: "holdings", label: "Holdings", icon: PieChart },
               { key: "signals", label: "Signals", icon: TrendingUp },
+              { key: "patterns", label: "Patterns", icon: TrendingDown },
               { key: "links", label: "Links", icon: Globe },
             ].map((tab) => (
               <button
@@ -895,9 +1172,17 @@ export default function MFChartToolPage() {
                 </CardHeader>
                 <CardContent>
                   {!selectedScheme?.family_id ? (
-                    <div className="text-sm text-muted-foreground">Holdings need scheme enrichment.</div>
+                    <div className="space-y-2">
+                      <div className="text-sm text-muted-foreground">Holdings need one-time scheme enrichment.</div>
+                      <div className="text-[11px] text-muted-foreground">Tip: open the scheme detail and click “Enable analysis”.</div>
+                    </div>
                   ) : !holdings ? (
-                    <div className="text-sm text-muted-foreground">No holdings snapshot yet.</div>
+                    <div className="space-y-2">
+                      <div className="text-sm text-muted-foreground">No holdings snapshot yet.</div>
+                      <Button size="sm" variant="outline" onClick={refreshHoldingsNow} disabled={refreshingHoldings}>
+                        {refreshingHoldings ? "Fetchingâ€¦" : "Fetch holdings now"}
+                      </Button>
+                    </div>
                   ) : (
                     <div className="space-y-2">
                       <div className="text-xs text-muted-foreground mb-2">
@@ -959,6 +1244,64 @@ export default function MFChartToolPage() {
                       </CardContent>
                     </Card>
                   ))
+                )}
+              </div>
+            )}
+
+            {/* Patterns Tab */}
+            {activeTab === "patterns" && (
+              <div className="space-y-2">
+                {patternItems.length === 0 ? (
+                  <div className="text-sm text-muted-foreground text-center py-6">No patterns in range.</div>
+                ) : (
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm flex items-center justify-between">
+                        <span className="flex items-center gap-2">
+                          <TrendingDown className="h-4 w-4" /> Patterns
+                        </span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => chartApi.current?.timeScale().fitContent()}
+                        >
+                          Reset
+                        </Button>
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="p-0">
+                      <div className="max-h-[520px] overflow-y-auto">
+                        <table className="w-full text-xs">
+                          <thead className="sticky top-0 bg-card border-b border-border/60">
+                            <tr>
+                              <th className="text-left font-medium px-3 py-2">Date</th>
+                              <th className="text-left font-medium px-3 py-2">Pattern</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {patternItems.map((p, i) => (
+                              <tr
+                                key={`${p.kind}:${p.time}:${p.label}:${i}`}
+                                className="border-b border-border/30 hover:bg-muted/20 cursor-pointer"
+                                onClick={() => focusOnTime(p.time)}
+                                title="Click to jump"
+                              >
+                                <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">{p.time}</td>
+                                <td className="px-3 py-2">
+                                  <div className="flex items-center gap-2">
+                                    <span className={p.direction === "bullish" ? "text-green-400" : p.direction === "bearish" ? "text-red-400" : "text-foreground"}>
+                                      {p.label}
+                                    </span>
+                                    <span className="text-[10px] text-muted-foreground">{p.kind}</span>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </CardContent>
+                  </Card>
                 )}
               </div>
             )}

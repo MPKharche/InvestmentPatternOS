@@ -2,7 +2,11 @@ import { chromium } from "playwright";
 
 export const runtime = "nodejs";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
+const API_BASE_RAW = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api/v1";
+const BACKEND_ORIGIN = process.env.PATTERNOS_BACKEND_ORIGIN ?? "http://localhost:8000";
+const API_BASE = API_BASE_RAW.startsWith("http")
+  ? API_BASE_RAW
+  : `${BACKEND_ORIGIN}${API_BASE_RAW.startsWith("/") ? API_BASE_RAW : `/${API_BASE_RAW}`}`;
 
 function esc(s: string) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));

@@ -30,6 +30,9 @@ def capabilities():
             "alerts_enabled": settings.TELEGRAM_ALERTS_ENABLED,
             "bot_token_configured": bool(settings.TELEGRAM_BOT_TOKEN),
         },
+        "n8n": {
+            "webhook_configured": bool((settings.N8N_WEBHOOK_URL or "").strip()),
+        },
         "llm": {
             "disabled": bool(settings.LLM_DISABLED),
             "openrouter_key_configured": bool(settings.OPENROUTER_API_KEY),

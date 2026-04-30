@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     TELEGRAM_ALLOWED_USERNAMES: str = ""  # comma-separated usernames; optional
     TELEGRAM_ALERT_MAX_ATTEMPTS: int = 10
 
+    # Optional: n8n (or any HTTP receiver) for signal fan-out — POST JSON {event, payload}
+    N8N_WEBHOOK_URL: str = ""
+    N8N_WEBHOOK_SECRET: str = ""
+
     # App
     APP_ENV: str = "development"
     BACKEND_PORT: int = 8000

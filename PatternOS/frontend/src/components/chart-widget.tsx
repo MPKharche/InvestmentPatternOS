@@ -9,11 +9,14 @@ import {
   createSeriesMarkers,
   LineSeries,
   type IChartApi,
-  ColorType,
   type ISeriesMarkersPluginApi,
   type SeriesMarker,
   type Time,
 } from "lightweight-charts";
+import {
+  patternOsChartToolBase,
+  patternOsCandlestickSeriesDefaults,
+} from "@/lib/chart-theme";
 
 export interface KeyLevels {
   entry?: number;
@@ -60,25 +63,15 @@ export function ChartWidget({
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height,
-      layout: {
-        background: { type: ColorType.Solid, color: "#0f0f11" },
-        textColor: "#9ca3af",
-      },
-      grid: {
-        vertLines: { color: "#1f2937" },
-        horzLines: { color: "#1f2937" },
-      },
-      timeScale: { borderColor: "#374151" },
+      layout: patternOsChartToolBase.layout,
+      grid: patternOsChartToolBase.grid,
+      crosshair: patternOsChartToolBase.crosshair,
+      timeScale: patternOsChartToolBase.timeScale,
     });
     chartRef.current = chart;
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: "#22c55e",
-      downColor: "#ef4444",
-      borderUpColor: "#22c55e",
-      borderDownColor: "#ef4444",
-      wickUpColor: "#22c55e",
-      wickDownColor: "#ef4444",
+      ...patternOsCandlestickSeriesDefaults,
     });
     markersRef.current = createSeriesMarkers(candleSeries, []);
 

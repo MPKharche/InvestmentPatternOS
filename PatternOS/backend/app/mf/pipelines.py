@@ -1056,6 +1056,18 @@ def generate_nav_signals(db: Session, scheme: MFScheme, nav_date: date, metrics:
         )
         created += int(res.rowcount or 0)
     db.commit()
+    if created > 0:
+        from app.integrations.events import emit_patternos_event_sync
+
+        emit_patternos_event_sync(
+            "mf_signals_created",
+            {
+                "scheme_code": scheme.scheme_code,
+                "scheme_name": (scheme.scheme_name or "")[:200],
+                "nav_date": nav_date.isoformat(),
+                "created": created,
+            },
+        )
     return created
 
 

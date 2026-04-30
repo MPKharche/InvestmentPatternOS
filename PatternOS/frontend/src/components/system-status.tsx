@@ -91,6 +91,12 @@ export function SystemStatusPill() {
             </span>
           </div>
           <div className="flex items-center justify-between">
+            <span>n8n webhook</span>
+            <span className="font-medium">
+              {caps ? (caps.n8n?.webhook_configured ? "Configured" : "Not set") : "—"}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
             <span>AI (LLM)</span>
             <span className="font-medium">
               {caps ? (caps.llm.disabled ? "Off" : "On") : "—"}

@@ -9,6 +9,9 @@ export type Capabilities = {
     alerts_enabled: boolean;
     bot_token_configured: boolean;
   };
+  n8n: {
+    webhook_configured: boolean;
+  };
   llm: {
     disabled: boolean;
     openrouter_key_configured: boolean;

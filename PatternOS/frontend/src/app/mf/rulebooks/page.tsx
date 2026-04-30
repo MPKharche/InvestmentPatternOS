@@ -156,7 +156,10 @@ export default function MFRulebooksPage() {
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">MF Rulebooks</h1>
-          <p className="text-muted-foreground text-sm mt-1">Versioned JSON rulebooks driving MF signals.</p>
+          <p className="text-muted-foreground text-sm mt-1">
+            Versioned JSON rulebooks driving MF signals. Only <strong>active</strong> rulebooks are used for
+            automated NAV signal generation.
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <CreateRulebookDialog

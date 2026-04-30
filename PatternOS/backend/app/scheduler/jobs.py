@@ -20,8 +20,6 @@ def start_scheduler():
     async def daily_scan_nse():
         """Runs daily at 7:00 AM IST — before NSE market open."""
         logger.info("Running daily NSE scan...")
-        if settings.TELEGRAM_MODE.strip().lower() == "polling":
-            return
         from app.db.session import SessionLocal
         from app.scanner.engine import run_scan
         db = SessionLocal()

@@ -1,6 +1,8 @@
 import { test, expect } from "@playwright/test";
 
-const API_BASE = process.env.E2E_API_BASE ?? "http://localhost:8000/api/v1";
+const UI_BASE = process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000";
+// Prefer same-origin proxy in Next (`/api/v1`) so tests work across different backend ports.
+const API_BASE = process.env.E2E_API_BASE ?? `${UI_BASE.replace(/\/$/, "")}/api/v1`;
 
 test("capabilities endpoint returns optional flags", async ({ request }) => {
   const res = await request.get(`${API_BASE}/meta/capabilities`);
@@ -34,6 +36,48 @@ test("mf schemes page loads", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Schemes" })).toBeVisible();
   // Should render at least one row from curated watchlist
   await expect(page.locator("text=/AMFI\\s+\\d+/").first()).toBeVisible();
+});
+
+test("mf scheme detail uses Morningstar factsheet deep link when available", async ({ request, page }) => {
+  const res = await request.get(`${API_BASE}/mf/schemes?limit=250`);
+  expect(res.ok()).toBeTruthy();
+  const schemes = (await res.json()) as any[];
+  const target = schemes.find(
+    (s) =>
+      s?.morningstar_link_status === "deep_factsheet" &&
+      typeof s?.morningstar_url === "string" &&
+      s.morningstar_url.includes("fund-factsheet.aspx")
+  );
+  test.skip(!target, "No scheme with a Morningstar factsheet link in this environment");
+
+  await page.goto(`/mf/schemes/${target.scheme_code}`);
+  const popupPromise = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Morningstar" }).click();
+  const popup = await popupPromise;
+  await popup.waitForLoadState();
+  expect(popup.url()).toMatch(/fund-factsheet\.aspx/);
+});
+
+test("mf scheme detail can fix Morningstar link by pasting a Morningstar URL", async ({ request, page }) => {
+  const res = await request.get(`${API_BASE}/mf/schemes?limit=400`);
+  expect(res.ok()).toBeTruthy();
+  const schemes = (await res.json()) as any[];
+  const target = schemes.find((s) => !s?.morningstar_sec_id);
+  test.skip(!target, "No scheme without morningstar_sec_id found in this environment");
+
+  await page.goto(`/mf/schemes/${target.scheme_code}`);
+
+  // Use the non-technical “Edit links” flow: paste a Morningstar factsheet URL once.
+  await page.getByRole("button", { name: "Edit links" }).click();
+  await page.getByLabel("Morningstar URL").fill("https://www.morningstar.in/mutualfunds/f00000pfli/test/fund-factsheet.aspx");
+  await page.getByRole("button", { name: "Save" }).click();
+
+  // Clicking again should now open a factsheet deep link.
+  const popup2Promise = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Morningstar" }).click();
+  const popup2 = await popup2Promise;
+  await popup2.waitForLoadState();
+  expect(popup2.url()).toMatch(/fund-factsheet\.aspx/);
 });
 
 test("mf schemes watchlist toggle works", async ({ page }) => {

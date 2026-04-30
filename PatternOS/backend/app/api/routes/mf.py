@@ -51,7 +51,13 @@ from app.mf.pipelines import (
     generate_nav_signals,
 )
 from app.mf.rules import validate_rulebook_v1
-from app.mf.links import ensure_scheme_links
+from app.mf.links import (
+    ensure_scheme_links,
+    extract_morningstar_sec_id,
+    extract_morningstar_slug,
+    morningstar_factsheet_url,
+    validate_morningstar_factsheet_link,
+)
 from app.mf.safety import pause_provider, resume_provider
 from app.mf.safety import IngestionTask, provider_is_paused, task
 from app.mf.mfdata import fetch_scheme, fetch_family_holdings, fetch_family_sectors
@@ -338,7 +344,8 @@ def get_scheme(scheme_code: int, db: Session = Depends(get_db)):
                 s.min_lumpsum = ext.min_lumpsum if ext.min_lumpsum is not None else s.min_lumpsum
                 s.exit_load = ext.exit_load or s.exit_load
                 s.benchmark = ext.benchmark or s.benchmark
-                s.morningstar_sec_id = ext.morningstar_sec_id or s.morningstar_sec_id
+                if ext.morningstar_sec_id:
+                    s.morningstar_sec_id = str(ext.morningstar_sec_id).strip().upper()
                 if ext.launch_date:
                     try:
                         s.launch_date = datetime.fromisoformat(ext.launch_date).date()
@@ -354,6 +361,46 @@ def get_scheme(scheme_code: int, db: Session = Depends(get_db)):
         pass
     if ensure_scheme_links(s):
         db.add(s)
+    # Optional on-demand validation: keeps deep link if reachable, else falls back.
+    try:
+        if validate_morningstar_factsheet_link(db, s):
+            db.add(s)
+    except Exception:
+        pass
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    return s
+
+
+@router.post("/schemes/{scheme_code}/links/resolve", response_model=MFSchemeOut)
+def resolve_scheme_links(scheme_code: int, db: Session = Depends(get_db)):
+    """
+    Resolve external links without scraping:
+    - Best-effort fetch via mfdata (cached / rate-limited) to populate `morningstar_sec_id`.
+    - Then rewrite Morningstar to direct Factsheet deep link.
+
+    This is used by the UI to make the Morningstar button "just work" in the background.
+    """
+    s = db.query(MFScheme).filter_by(scheme_code=scheme_code).first()
+    if not s:
+        raise HTTPException(404, "Scheme not found")
+
+    try:
+        if (not s.morningstar_sec_id) and settings.MF_INGESTION_ENABLED and not provider_is_paused(db, "mfdata"):
+            with task(db, run_id=None, provider="mfdata", endpoint_class="scheme", scheme_code=scheme_code) as t:
+                ext = fetch_scheme(scheme_code, task=t)
+            if ext and ext.morningstar_sec_id:
+                s.morningstar_sec_id = str(ext.morningstar_sec_id).strip().upper()
+                s.mfdata_fetched_at = datetime.utcnow()
+    except Exception:
+        pass
+
+    ensure_scheme_links(s)
+    try:
+        validate_morningstar_factsheet_link(db, s, force=True)
+    except Exception:
+        pass
     db.add(s)
     db.commit()
     db.refresh(s)
@@ -374,12 +421,29 @@ def update_scheme(scheme_code: int, body: MFSchemeUpdate, db: Session = Depends(
     if body.morningstar_url is not None:
         s.morningstar_url = body.morningstar_url
     if body.morningstar_sec_id is not None:
-        s.morningstar_sec_id = body.morningstar_sec_id
+        s.morningstar_sec_id = (body.morningstar_sec_id.strip().upper() if body.morningstar_sec_id else None)
     if body.valueresearch_link_status is not None:
         s.valueresearch_link_status = body.valueresearch_link_status
     if body.morningstar_link_status is not None:
         s.morningstar_link_status = body.morningstar_link_status
+    # If user pasted a Morningstar URL, auto-extract the security id and rewrite to Factsheet.
+    pasted_ms_url = body.morningstar_url if body.morningstar_url is not None else None
+    if pasted_ms_url and not s.morningstar_sec_id:
+        sec = extract_morningstar_sec_id(pasted_ms_url)
+        if sec:
+            s.morningstar_sec_id = sec
+
+    if s.morningstar_sec_id and (body.morningstar_url is not None or body.morningstar_sec_id is not None):
+        slug = extract_morningstar_slug(pasted_ms_url) if pasted_ms_url else None
+        s.morningstar_url = morningstar_factsheet_url(sec_id=s.morningstar_sec_id, scheme_name=s.scheme_name, slug=slug)
+        s.morningstar_link_status = "deep_factsheet"
+
     ensure_scheme_links(s)
+    # If link checks enabled, validate once right after a user update.
+    try:
+        validate_morningstar_factsheet_link(db, s, force=True)
+    except Exception:
+        pass
     db.add(s)
     db.commit()
     db.refresh(s)
@@ -392,6 +456,7 @@ def scheme_nav(
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
     limit: int = Query(400, ge=10, le=5000),
+    tf: str = Query("1d"),
     db: Session = Depends(get_db),
 ):
     q = db.query(MFNavDaily).filter_by(scheme_code=scheme_code)
@@ -400,9 +465,102 @@ def scheme_nav(
     if to_date:
         q = q.filter(MFNavDaily.nav_date <= to_date)
     rows = q.order_by(MFNavDaily.nav_date.desc()).limit(limit).all()
+    if not rows:
+        return []
     # Return ascending for charting.
     rows = list(reversed(rows))
-    return [MFNavPoint(nav_date=r.nav_date, nav=float(r.nav)) for r in rows]
+
+    tf = (tf or "1d").strip()
+    if tf not in {"1d", "1w", "1M"}:
+        tf = "1d"
+    if tf == "1d":
+        return [MFNavPoint(nav_date=r.nav_date, nav=float(r.nav)) for r in rows]
+
+    import pandas as pd
+
+    closes = [float(r.nav) for r in rows]
+    dates = [r.nav_date for r in rows]
+    s = pd.Series(closes, index=pd.to_datetime(dates))
+    rule = "W-FRI" if tf == "1w" else "M"
+    rs = s.resample(rule).last().dropna()
+    return [MFNavPoint(nav_date=d.date(), nav=float(v)) for d, v in rs.items()]
+
+
+@router.get("/schemes/{scheme_code}/ohlc")
+def scheme_ohlc(
+    scheme_code: int,
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
+    limit: int = Query(2500, ge=50, le=10000),
+    tf: str = Query("1d"),
+    ha: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns OHLC bars for MF NAV series:
+    - 1d: synthetic OHLC from NAV close (open=prev close).
+    - 1w/1M: aggregate daily NAV closes into OHLC (open=first, close=last, high=max, low=min).
+    Optional `ha=true` returns Heikin-Ashi bars computed from the aggregated OHLC.
+    """
+    q = db.query(MFNavDaily).filter_by(scheme_code=scheme_code)
+    if from_date:
+        q = q.filter(MFNavDaily.nav_date >= from_date)
+    if to_date:
+        q = q.filter(MFNavDaily.nav_date <= to_date)
+    rows = q.order_by(MFNavDaily.nav_date.desc()).limit(limit).all()
+    if not rows:
+        return []
+    rows = list(reversed(rows))
+
+    tf = (tf or "1d").strip()
+    if tf not in {"1d", "1w", "1M"}:
+        tf = "1d"
+
+    import pandas as pd
+
+    closes = [float(r.nav) for r in rows]
+    dates = [r.nav_date for r in rows]
+    opens = [closes[0]] + closes[:-1]
+    highs = [max(o, c) for o, c in zip(opens, closes)]
+    lows = [min(o, c) for o, c in zip(opens, closes)]
+    df = pd.DataFrame(
+        {"Open": opens, "High": highs, "Low": lows, "Close": closes},
+        index=pd.to_datetime(dates),
+    )
+
+    if tf != "1d":
+        rule = "W-FRI" if tf == "1w" else "M"
+        df = (
+            df.resample(rule)
+            .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
+            .dropna(subset=["Close"])
+        )
+
+    if ha and not df.empty:
+        ha_close = (df["Open"] + df["High"] + df["Low"] + df["Close"]) / 4.0
+        ha_open = ha_close.copy()
+        ha_open.iloc[0] = (df["Open"].iloc[0] + df["Close"].iloc[0]) / 2.0
+        for i in range(1, len(df)):
+            ha_open.iloc[i] = (ha_open.iloc[i - 1] + ha_close.iloc[i - 1]) / 2.0
+        ha_high = pd.concat([df["High"], ha_open, ha_close], axis=1).max(axis=1)
+        ha_low = pd.concat([df["Low"], ha_open, ha_close], axis=1).min(axis=1)
+        df = pd.DataFrame(
+            {"Open": ha_open, "High": ha_high, "Low": ha_low, "Close": ha_close},
+            index=df.index,
+        )
+
+    out = []
+    for idx, row in df.iterrows():
+        out.append(
+            {
+                "time": str(idx.date()),
+                "open": round(float(row["Open"]), 4),
+                "high": round(float(row["High"]), 4),
+                "low": round(float(row["Low"]), 4),
+                "close": round(float(row["Close"]), 4),
+            }
+        )
+    return out
 
 
 @router.get("/schemes/{scheme_code}/metrics")
@@ -444,6 +602,7 @@ def scheme_metrics(
 def scheme_indicators(
     scheme_code: int,
     limit: int = Query(420, ge=50, le=5000),
+    tf: str = Query("1d"),
     db: Session = Depends(get_db),
 ):
     """
@@ -469,6 +628,17 @@ def scheme_indicators(
     highs = [max(o, c) for o, c in zip(opens, closes)]
     lows = [min(o, c) for o, c in zip(opens, closes)]
     df = pd.DataFrame({"Open": opens, "High": highs, "Low": lows, "Close": closes, "Volume": [0] * len(closes)}, index=pd.to_datetime(dates))
+
+    tf = (tf or "1d").strip()
+    if tf not in {"1d", "1w", "1M"}:
+        tf = "1d"
+    if tf != "1d":
+        rule = "W-FRI" if tf == "1w" else "M"
+        df = (
+            df.resample(rule)
+            .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
+            .dropna(subset=["Close"])
+        )
     idf = compute_indicators(df)
     return indicators_to_records(idf)
 
@@ -477,6 +647,8 @@ def scheme_indicators(
 def scheme_patterns(
     scheme_code: int,
     lookback: int = Query(180, ge=30, le=500),
+    tf: str = Query("1d"),
+    cooldown_days: int = Query(14, ge=0, le=60),
     db: Session = Depends(get_db),
 ):
     """
@@ -502,11 +674,61 @@ def scheme_patterns(
     highs = [max(o, c) for o, c in zip(opens, closes)]
     lows = [min(o, c) for o, c in zip(opens, closes)]
     df = pd.DataFrame({"Open": opens, "High": highs, "Low": lows, "Close": closes, "Volume": [0] * len(closes)}, index=pd.to_datetime(dates))
-    return {
+
+    tf = (tf or "1d").strip()
+    if tf not in {"1d", "1w", "1M"}:
+        tf = "1d"
+    if tf != "1d":
+        rule = "W-FRI" if tf == "1w" else "M"
+        df = (
+            df.resample(rule)
+            .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
+            .dropna(subset=["Close"])
+        )
+    out = {
         "chart_patterns": detect_chart_patterns(df, lookback=lookback),
         "candlestick_patterns": detect_candlestick_patterns(df, lookback=min(30, lookback)),
         "talib_candlestick_patterns": detect_talib_candlestick_patterns(df, lookback=min(30, lookback)),
     }
+
+    if cooldown_days and cooldown_days > 0:
+        import datetime as _dt
+
+        def _parse_day(s: str) -> _dt.date | None:
+            try:
+                return _dt.date.fromisoformat(str(s)[:10])
+            except Exception:
+                return None
+
+        def _cooldown_filter(items: list[dict], *, key_field: str, date_field: str) -> list[dict]:
+            last: dict[str, _dt.date] = {}
+            kept: list[dict] = []
+            for it in sorted(items, key=lambda x: str(x.get(date_field) or "")):
+                k = str(it.get(key_field) or "").strip()
+                d = _parse_day(str(it.get(date_field) or ""))
+                if not k or not d:
+                    continue
+                prev = last.get(k)
+                if prev and (d - prev).days < int(cooldown_days):
+                    continue
+                last[k] = d
+                kept.append(it)
+            return kept
+
+        try:
+            out["candlestick_patterns"] = _cooldown_filter(out.get("candlestick_patterns") or [], key_field="pattern", date_field="date")
+        except Exception:
+            pass
+        try:
+            out["talib_candlestick_patterns"] = _cooldown_filter(out.get("talib_candlestick_patterns") or [], key_field="name", date_field="time")
+        except Exception:
+            pass
+        try:
+            out["chart_patterns"] = _cooldown_filter(out.get("chart_patterns") or [], key_field="type", date_field="end_date")
+        except Exception:
+            pass
+
+    return out
 
 
 @router.post("/schemes/{scheme_code}/enable")

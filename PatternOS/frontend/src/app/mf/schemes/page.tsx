@@ -164,7 +164,7 @@ export default function MFSchemesPage() {
                           target="_blank"
                           rel="noreferrer"
                         >
-                          Morningstar
+                          {r.morningstar_link_status === "deep_factsheet" ? "Morningstar (Factsheet)" : "Morningstar (Search)"}
                         </a>
                       </div>
                     </td>

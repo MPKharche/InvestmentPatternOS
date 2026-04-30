@@ -1584,8 +1584,13 @@ export default function StudioPage() {
   return (
     <div className="flex flex-col gap-3 h-[calc(100vh-5rem)] max-w-7xl">
       {/* Top bar */}
-      <div className="flex items-center gap-3 shrink-0">
-        <h1 className="text-2xl font-bold">Pattern Studio</h1>
+      <div className="flex flex-wrap items-center gap-3 shrink-0">
+        <div className="flex flex-col gap-0.5 min-w-[200px]">
+          <h1 className="text-2xl font-bold">Pattern Studio</h1>
+          <p className="text-xs text-muted-foreground">
+            Only <strong>active</strong> patterns are included in scheduled scans.
+          </p>
+        </div>
         {currentPatternId && selectedPattern && (
           <Badge
             variant={selectedPattern.status === "active" ? "default" : "secondary"}

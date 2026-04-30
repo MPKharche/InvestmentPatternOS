@@ -13,6 +13,7 @@ from app.llm.screener import llm_screen
 from app.cache.signal_cache import get_cached_screening, store_screening_result
 from app.config import get_settings
 from app.alerts.telegram import build_alert_payload, enqueue_telegram_alert
+from app.integrations.events import emit_patternos_event
 from app.scanner.backtest_metrics import forward_returns_for_live_bar
 
 settings = get_settings()
@@ -154,6 +155,17 @@ async def scan_symbol(
     payload = build_alert_payload(db, signal, pattern, key_levels, analysis, equity_research=equity_note)
     if settings.TELEGRAM_ALERTS_ENABLED:
         enqueue_telegram_alert(db, signal, payload)
+    await emit_patternos_event(
+        "equity_signal_created",
+        {
+            "pattern_id": str(pattern.id),
+            "pattern_name": pattern.name,
+            "symbol": signal.symbol,
+            "exchange": signal.exchange,
+            "timeframe": timeframe,
+            "confidence": float(adjusted_score),
+        },
+    )
     return signal
 
 

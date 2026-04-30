@@ -952,6 +952,14 @@ export interface MFNavPoint {
   nav: number;
 }
 
+export interface MFOhlcBar {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
 export interface MFSignal {
   id: string;
   scheme_code: number;
@@ -1063,6 +1071,7 @@ export const mfApi = {
     return request<MFScheme[]>(`/mf/schemes?${params}`);
   },
   scheme: (schemeCode: number) => request<MFScheme>(`/mf/schemes/${schemeCode}`),
+  resolveSchemeLinks: (schemeCode: number) => request<MFScheme>(`/mf/schemes/${schemeCode}/links/resolve`, { method: "POST", body: JSON.stringify({}) }),
   updateScheme: (schemeCode: number, body: { monitored?: boolean; notes?: string }) =>
     request<MFScheme>(`/mf/schemes/${schemeCode}`, { method: "PATCH", body: JSON.stringify(body) }),
   updateSchemeLinks: (
@@ -1078,13 +1087,26 @@ export const mfApi = {
       `/mf/schemes/${schemeCode}/enable`,
       { method: "POST", body: JSON.stringify({}) }
     ),
-  nav: (schemeCode: number, limit = 400) =>
-    request<MFNavPoint[]>(`/mf/schemes/${schemeCode}/nav?limit=${limit}`),
+  ohlc: (schemeCode: number, limit = 2500, tf?: "1d" | "1w" | "1M", ha?: boolean) => {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (tf) qs.set("tf", tf);
+    if (ha != null) qs.set("ha", String(ha));
+    return request<MFOhlcBar[]>(`/mf/schemes/${schemeCode}/ohlc?${qs.toString()}`);
+  },
+  nav: (schemeCode: number, limit = 400, tf?: "1d" | "1w" | "1M") =>
+    request<MFNavPoint[]>(
+      `/mf/schemes/${schemeCode}/nav?limit=${limit}${tf ? `&tf=${encodeURIComponent(tf)}` : ""}`
+    ),
   metrics: (schemeCode: number) => request<any>(`/mf/schemes/${schemeCode}/metrics`),
-  indicators: (schemeCode: number, limit = 420) =>
-    request<MFIndicatorRecord[]>(`/mf/schemes/${schemeCode}/indicators?limit=${limit}`),
-  patterns: (schemeCode: number, lookback = 180) =>
-    request<MFPatternsResponse>(`/mf/schemes/${schemeCode}/patterns?lookback=${lookback}`),
+  indicators: (schemeCode: number, limit = 420, tf?: "1d" | "1w" | "1M") =>
+    request<MFIndicatorRecord[]>(
+      `/mf/schemes/${schemeCode}/indicators?limit=${limit}${tf ? `&tf=${encodeURIComponent(tf)}` : ""}`
+    ),
+  patterns: (schemeCode: number, lookback = 180, tf?: "1d" | "1w" | "1M", cooldownDays = 14) => {
+    const qs = new URLSearchParams({ lookback: String(lookback), cooldown_days: String(cooldownDays) });
+    if (tf) qs.set("tf", tf);
+    return request<MFPatternsResponse>(`/mf/schemes/${schemeCode}/patterns?${qs.toString()}`);
+  },
   holdings: (familyId: number) => request<any>(`/mf/families/${familyId}/holdings`),
   refreshHoldings: (familyId: number) =>
     request<{ ok: boolean; fetched?: boolean; month?: string; skipped?: boolean; reason?: string; error?: string }>(
