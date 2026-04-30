@@ -5,12 +5,15 @@ import {
   CandlestickSeries,
   LineSeries,
   HistogramSeries,
-  ColorType,
   LineStyle,
   type IChartApi,
   type Time,
 } from "lightweight-charts";
 import type { StockPrice } from "@/lib/api";
+import {
+  patternOsChartToolBase,
+  patternOsCandlestickSeriesDefaults,
+} from "@/lib/chart-theme";
 
 interface IndicatorChartsProps {
   prices: StockPrice[];
@@ -53,9 +56,7 @@ export function IndicatorCharts({
     // Price chart (candlesticks + overlays)
     const priceChart = priceRef.current
       ? createChart(priceRef.current, {
-          layout: { background: { type: ColorType.Solid, color: "#0f0f11" }, textColor: "#9ca3af" },
-          grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
-          timeScale: { borderColor: "#374151" },
+          ...patternOsChartToolBase,
           height: 350,
           width: priceRef.current.clientWidth,
         })
@@ -63,12 +64,7 @@ export function IndicatorCharts({
 
     if (priceChart) {
       const candleSeries = priceChart.addSeries(CandlestickSeries, {
-        upColor: "#22c55e",
-        downColor: "#ef4444",
-        borderUpColor: "#22c55e",
-        borderDownColor: "#ef4444",
-        wickUpColor: "#22c55e",
-        wickDownColor: "#ef4444",
+        ...patternOsCandlestickSeriesDefaults,
       });
       candleSeries.setData(
         prices.map((p) => ({
@@ -144,9 +140,7 @@ export function IndicatorCharts({
     let rsiChart: IChartApi | null = null;
     if (showRSI && rsiRef.current) {
       rsiChart = createChart(rsiRef.current, {
-        layout: { background: { type: ColorType.Solid, color: "#0f0f11" }, textColor: "#9ca3af" },
-        grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
-        timeScale: { borderColor: "#374151" },
+        ...patternOsChartToolBase,
         height: 150,
         width: rsiRef.current.clientWidth,
       });
@@ -172,9 +166,7 @@ export function IndicatorCharts({
     let macdChart: IChartApi | null = null;
     if (showMACD && macdRef.current) {
       macdChart = createChart(macdRef.current, {
-        layout: { background: { type: ColorType.Solid, color: "#0f0f11" }, textColor: "#9ca3af" },
-        grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
-        timeScale: { borderColor: "#374151" },
+        ...patternOsChartToolBase,
         height: 150,
         width: macdRef.current.clientWidth,
       });

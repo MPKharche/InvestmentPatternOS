@@ -27,3 +27,7 @@ logs/
 
 # Playwright / local test output
 frontend/test-results/
+
+# Local one-shot dev flags (never commit)
+backend/.db_initialized
+backend/scripts/.mf_historical_seeded
