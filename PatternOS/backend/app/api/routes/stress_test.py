@@ -98,6 +98,17 @@ class StressTestResult(BaseModel):
 # ============================================================================
 
 
+@router.get("/portfolio", response_model=List[PortfolioOut])
+def list_portfolios(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    """List saved portfolios (newest first)."""
+    q = db.query(PortfolioSnapshot).order_by(PortfolioSnapshot.updated_at.desc())
+    return q.offset(skip).limit(limit).all()
+
+
 @router.post("/portfolio", response_model=PortfolioOut, status_code=201)
 def create_portfolio(body: PortfolioCreate, db: Session = Depends(get_db)):
     """
